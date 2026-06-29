@@ -45,7 +45,8 @@
   header{display:flex;align-items:center;gap:8px;padding:10px 16px;
     background:var(--panel);border-bottom:1px solid var(--line);
     box-shadow:0 2px 14px var(--shadow);position:relative;z-index:20;flex-wrap:wrap}
-  .brand{font-family:var(--display);font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:15px;display:flex;align-items:center;gap:9px;margin-right:6px}
+  .brand{font-family:var(--display);font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:15px;display:flex;align-items:center;gap:9px;margin-right:6px;color:var(--txt);text-decoration:none;cursor:pointer}
+  .brand:hover{color:var(--accent2)}
   .brand b{background:linear-gradient(90deg,var(--accent),var(--accent2));
     -webkit-background-clip:text;background-clip:text;color:transparent}
   .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);
@@ -274,7 +275,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><span class="dot"></span> FORGE<b>3D</b></div>
+    <a class="brand" href="index.html" title="Back to home"><span class="dot"></span> FORGE<b>3D</b></a>
     <button class="tbtn ghost" id="btnNew" title="Clear scene">New</button>
     <button class="tbtn ghost" id="btnSave" title="Download project JSON">Save</button>
     <button class="tbtn ghost" id="btnLoad" title="Upload project JSON">Load</button>
