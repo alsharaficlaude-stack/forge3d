@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Admin · Forge3D</title>
+<meta name="theme-color" content="#0b0d10" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M16 5 27 11.5v13L16 31 5 24.5v-13z' fill='none' stroke='%236366f1' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="forge-ui.css" />
+<style>
+  .page{padding:26px 0 60px}
+  .head{display:flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap}
+  .head h1{margin:0;font-size:24px}
+  .head .spacer{flex:1}
+  .section-title{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin:30px 0 12px;font-weight:700}
+  .toolbar{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+  .toolbar .input{max-width:280px}
+  .chartcard{display:flex;gap:4px;align-items:flex-end;height:140px;padding:16px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
+  .bar{flex:1;background:linear-gradient(180deg,var(--accent),#3f44b8);border-radius:4px 4px 0 0;min-height:2px;position:relative}
+  .bar span{position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:10px;color:var(--mut)}
+  .bar small{position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);font-size:9.5px;color:var(--mut);white-space:nowrap}
+  .empty{padding:40px;text-align:center;color:var(--mut)}
+  .gate{min-height:80vh;display:flex;align-items:center;justify-content:center;text-align:center}
+</style>
+</head>
+<body>
+<div class="protobar">Prototype admin — reads users stored in <b>this browser</b>. With the cloud backend, this will show every signup across all devices.</div>
+
+<nav class="nav"><div class="container">
+  <a class="brand" href="index.html"><svg class="logo" viewBox="0 0 32 32"><path d="M16 4 28 11v14L16 32 4 25V11z" fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round"/></svg> FORGE<b>3D</b></a>
+  <span class="badge admin">Admin</span>
+  <div class="spacer"></div>
+  <a class="navlink" href="Forge3D.html" style="margin-right:14px">Open app</a>
+  <a class="btn sm ghost" href="#" id="logoutBtn">Log out</a>
+</div></nav>
+
+<div class="container page" id="app"></div>
+
+<script src="forge-auth.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const me = Forge.current();
+const app = document.getElementById("app");
+document.getElementById("logoutBtn").onclick=(e)=>{ e.preventDefault(); Forge.logout(); location.href="index.html"; };
+
+/* ---- access guard ---- */
+if(!me){ location.replace("auth.html"); }
+else if(me.role!=="admin"){
+  app.innerHTML='<div class="gate"><div><h1>Admins only</h1><p class="muted">Your account doesn\'t have admin access.</p><a class="btn primary" href="Forge3D.html">Back to the app</a></div></div>';
+}else{
+  app.innerHTML =
+    '<div class="head"><h1>User administration</h1><div class="spacer"></div>'+
+    '<span class="muted">Signed in as <b>'+esc(me.email)+'</b></span></div>'+
+    '<div class="stats" id="stats"></div>'+
+    '<div class="section-title">New sign-ups · last 14 days</div>'+
+    '<div class="chartcard" id="chart"></div>'+
+    '<div class="section-title">Users</div>'+
+    '<div class="toolbar"><input class="input" id="search" placeholder="Search name or email…"><span class="spacer" style="flex:1"></span>'+
+    '<button class="btn sm danger" id="wipe">Reset all prototype data</button></div>'+
+    '<div class="card" style="padding:0;overflow:auto"><table class="table" id="tbl"></table></div>';
+  $("#search").addEventListener("input", render);
+  $("#wipe").addEventListener("click", ()=>{
+    if(confirm("Delete ALL prototype users, sessions and events from this browser? This cannot be undone.")){
+      localStorage.removeItem("forge3d_users"); localStorage.removeItem("forge3d_session"); localStorage.removeItem("forge3d_events");
+      location.href="auth.html";
+    }
+  });
+  render();
+}
+
+function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function ago(t){ if(!t) return "—"; const d=Date.now()-t, m=60000,h=3600000,day=86400000;
+  if(d<m) return "just now"; if(d<h) return Math.floor(d/m)+"m ago"; if(d<day) return Math.floor(d/h)+"h ago";
+  if(d<day*30) return Math.floor(d/day)+"d ago"; return new Date(t).toLocaleDateString(); }
+function dstr(t){ return new Date(t).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}); }
+
+function render(){
+  const users = Forge.load().slice().sort((a,b)=>b.createdAt-a.createdAt);
+  const now=Date.now(), week=7*86400000;
+  const active = users.filter(u=>now-(u.lastLogin||0)<week).length;
+  const fresh  = users.filter(u=>now-(u.createdAt||0)<week).length;
+  const logins = Forge.events().filter(e=>e.type==="login").length;
+  const admins = users.filter(u=>u.role==="admin").length;
+
+  $("#stats").innerHTML =
+    tile("Total users", users.length, true)+
+    tile("Active (7 days)", active)+
+    tile("New this week", fresh)+
+    tile("Total logins", logins)+
+    tile("Admins", admins);
+
+  // ---- 14-day signup chart ----
+  const days=14, buckets=new Array(days).fill(0), labels=[];
+  const today=new Date(); today.setHours(0,0,0,0);
+  for(let i=0;i<days;i++){ const d=new Date(today); d.setDate(d.getDate()-(days-1-i));
+    labels.push(d.getDate()+"/"+(d.getMonth()+1)); }
+  users.forEach(u=>{ const d=new Date(u.createdAt); d.setHours(0,0,0,0);
+    const idx=days-1-Math.round((today-d)/86400000); if(idx>=0&&idx<days) buckets[idx]++; });
+  const max=Math.max(1,...buckets);
+  $("#chart").innerHTML = buckets.map((v,i)=>
+    '<div class="bar" style="height:'+(v/max*100)+'%;opacity:'+(v?1:.25)+'">'+
+    (v?'<span>'+v+'</span>':'')+'<small>'+labels[i]+'</small></div>').join("");
+
+  // ---- table ----
+  const q=($("#search").value||"").toLowerCase().trim();
+  const rows=users.filter(u=>!q || u.email.toLowerCase().includes(q) || (u.name||"").toLowerCase().includes(q));
+  let html='<thead><tr><th>User</th><th>Role</th><th>Joined</th><th>Last seen</th><th>Logins</th><th>Status</th><th></th></tr></thead><tbody>';
+  if(!rows.length) html+='<tr><td colspan="7"><div class="empty">No users yet — create one on the sign-up page.</div></td></tr>';
+  rows.forEach(u=>{
+    const meRow=u.id===me.id;
+    html+='<tr>'+
+      '<td><b>'+esc(u.name)+'</b>'+(meRow?' <span class="muted">(you)</span>':'')+'<br><span class="muted" style="font-size:12.5px">'+esc(u.email)+'</span></td>'+
+      '<td>'+(u.role==="admin"?'<span class="badge admin">admin</span>':'<span class="badge">user</span>')+'</td>'+
+      '<td class="muted">'+dstr(u.createdAt)+'</td>'+
+      '<td class="muted">'+ago(u.lastLogin)+'</td>'+
+      '<td class="mono">'+(u.logins||0)+'</td>'+
+      '<td>'+(u.disabled?'<span class="badge off">disabled</span>':'<span class="badge active">active</span>')+'</td>'+
+      '<td><div class="actions">'+
+        btn("role","'"+u.id+"'", u.role==="admin"?"Revoke admin":"Make admin")+
+        btn("toggle","'"+u.id+"'", u.disabled?"Enable":"Disable")+
+        btn("pw","'"+u.id+"'","Reset PW")+
+        '<button class="btn sm danger" data-act="del" data-id="'+u.id+'">Delete</button>'+
+      '</div></td></tr>';
+  });
+  html+='</tbody>';
+  $("#tbl").innerHTML=html;
+  $("#tbl").querySelectorAll("button[data-act]").forEach(b=>b.onclick=()=>action(b.dataset.act,b.dataset.id));
+}
+function tile(k,v,acc){ return '<div class="stat"><div class="k">'+k+'</div><div class="v'+(acc?' accent':'')+'">'+v+'</div></div>'; }
+function btn(act,id,label){ return '<button class="btn sm" data-act="'+act+'" data-id='+id+'>'+label+'</button>'; }
+
+function action(act,id){
+  const users=Forge.load(), u=users.find(x=>x.id===id); if(!u) return;
+  const admins=users.filter(x=>x.role==="admin").length;
+  if(act==="role"){
+    if(u.role==="admin" && admins<=1){ toast("Can't remove the last admin.","err"); return; }
+    Forge.update(id,{role:u.role==="admin"?"user":"admin"}); toast("Role updated","good");
+  }
+  if(act==="toggle"){
+    if(u.id===me.id){ toast("You can't disable your own account.","err"); return; }
+    Forge.update(id,{disabled:!u.disabled}); toast(u.disabled?"User enabled":"User disabled","good");
+  }
+  if(act==="pw"){
+    const pw=prompt("Set a new password for "+u.email+" (min 6 chars):"); if(pw===null) return;
+    if(pw.length<6){ toast("Password too short","err"); return; }
+    Forge.setPassword(id,pw).then(()=>toast("Password reset","good"));
+  }
+  if(act==="del"){
+    if(u.id===me.id){ toast("You can't delete your own account.","err"); return; }
+    if(u.role==="admin" && admins<=1){ toast("Can't delete the last admin.","err"); return; }
+    if(!confirm("Delete "+u.email+"? This cannot be undone.")) return;
+    Forge.remove(id); toast("User deleted","good");
+  }
+  render();
+}
+</script>
+</body>
+</html>

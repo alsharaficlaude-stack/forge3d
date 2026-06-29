@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Sign in · Forge3D</title>
+<meta name="theme-color" content="#0b0d10" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M16 5 27 11.5v13L16 31 5 24.5v-13z' fill='none' stroke='%236366f1' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="forge-ui.css" />
+<style>
+  .wrap{min-height:calc(100vh - 33px);display:flex;align-items:center;justify-content:center;padding:30px 18px;
+    background:radial-gradient(700px 360px at 50% -10%,rgba(99,102,241,.13),transparent 60%),var(--bg)}
+  .auth{width:100%;max-width:400px}
+  .auth .brand{justify-content:center;font-size:22px;margin-bottom:18px}
+  .tabs{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:4px;margin-bottom:20px}
+  .tabs button{flex:1;background:transparent;border:none;color:var(--mut);font:inherit;font-weight:700;
+    padding:9px;border-radius:7px;cursor:pointer}
+  .tabs button.on{background:var(--accent);color:#ffffff}
+  .hide{display:none}
+  .small{text-align:center;margin-top:16px;font-size:13px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="protobar">Prototype — your account is saved only in this browser. The first account created becomes the admin.</div>
+<div class="wrap">
+  <div class="auth">
+    <a class="brand" href="index.html"><svg class="logo" viewBox="0 0 32 32"><path d="M16 4 28 11v14L16 32 4 25V11z" fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round"/></svg> FORGE<b>3D</b></a>
+    <div class="card">
+      <div class="tabs">
+        <button id="tabLogin" class="on">Log in</button>
+        <button id="tabSignup">Sign up</button>
+      </div>
+
+      <form id="loginForm">
+        <div class="field"><label>Email</label><input class="input" type="email" id="li_email" autocomplete="email" placeholder="you@example.com"></div>
+        <div class="field"><label>Password</label><input class="input" type="password" id="li_pass" autocomplete="current-password" placeholder="••••••••"></div>
+        <p class="err" id="li_err"></p>
+        <button class="btn primary block" type="submit">Log in</button>
+      </form>
+
+      <form id="signupForm" class="hide">
+        <div class="field"><label>Name</label><input class="input" type="text" id="su_name" autocomplete="name" placeholder="Your name"></div>
+        <div class="field"><label>Email</label><input class="input" type="email" id="su_email" autocomplete="email" placeholder="you@example.com"></div>
+        <div class="field"><label>Password</label><input class="input" type="password" id="su_pass" autocomplete="new-password" placeholder="At least 6 characters"></div>
+        <p class="err" id="su_err"></p>
+        <button class="btn primary block" type="submit">Create account</button>
+        <p class="formnote" style="margin-top:12px">By continuing you accept this is a prototype with local-only storage.</p>
+      </form>
+    </div>
+    <p class="small">⟵ <a href="index.html">Back to home</a></p>
+  </div>
+</div>
+
+<script src="forge-auth.js"></script>
+<script>
+  // already signed in? go to app
+  if(Forge.current()) location.replace("Forge3D.html");
+
+  const tabLogin=document.getElementById("tabLogin"), tabSignup=document.getElementById("tabSignup");
+  const loginForm=document.getElementById("loginForm"), signupForm=document.getElementById("signupForm");
+  function show(which){
+    const signup = which==="signup";
+    tabSignup.classList.toggle("on",signup); tabLogin.classList.toggle("on",!signup);
+    signupForm.classList.toggle("hide",!signup); loginForm.classList.toggle("hide",signup);
+  }
+  tabLogin.onclick=()=>show("login"); tabSignup.onclick=()=>show("signup");
+  if(new URLSearchParams(location.search).get("mode")==="signup") show("signup");
+
+  function go(u){ toast("Welcome, "+u.name+"!","good"); setTimeout(()=>location.href="Forge3D.html",500); }
+
+  signupForm.addEventListener("submit", async (e)=>{
+    e.preventDefault(); const err=document.getElementById("su_err"); err.textContent="";
+    try{ const u=await Forge.signup(su_name.value, su_email.value, su_pass.value);
+      if(u.role==="admin") toast("Admin account created — you can open the Admin panel.","good");
+      go(u);
+    }catch(ex){ err.textContent=ex.message; }
+  });
+  loginForm.addEventListener("submit", async (e)=>{
+    e.preventDefault(); const err=document.getElementById("li_err"); err.textContent="";
+    try{ const u=await Forge.login(li_email.value, li_pass.value); go(u); }
+    catch(ex){ err.textContent=ex.message; }
+  });
+</script>
+</body>
+</html>

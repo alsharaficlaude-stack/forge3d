@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Forge3D — Design, slice &amp; print 3D, right in your browser</title>
+<meta name="description" content="Forge3D is a browser-based 3D design and printing suite — 100+ editable shapes, import & break STLs, cut/merge, connectors, slice preview and STL export. Built end-to-end with Claude AI." />
+<meta name="theme-color" content="#0b0d10" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M16 5 27 11.5v13L16 31 5 24.5v-13z' fill='none' stroke='%236366f1' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="forge-ui.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* ============ Technical studio — blueprint precision · mono numerics · calm space ============ */
+  :root{
+    --bg:#0a0c0f; --bg2:#0f1318; --panel:#14181e; --panel2:#1c212a; --line:#2b323d; --line2:#39424f;
+    --txt:#f1f3f6; --mut:#9aa4b2; --accent:#6366f1; --accent2:#818cf8;
+    --mono:"Space Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace; --grid:rgba(255,255,255,.02);
+    --maxw:1200px; --ease:cubic-bezier(.16,.7,.2,1);
+  }
+  body{font:15px/1.6 ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial}
+  h1,h2,h3,.brand,.strip .v,.divetab b{font-family:"Space Grotesk",ui-sans-serif,system-ui,sans-serif;letter-spacing:-.01em}
+  .container{max-width:var(--maxw)}
+
+  /* nav — quiet, uppercase, hairline */
+  .nav{background:rgba(7,8,10,.72);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+  .nav .container{height:70px}
+  .brand{font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:16px}
+  .brand b{background:none;-webkit-text-fill-color:currentColor;color:var(--accent2)}
+  .navlink{font-size:12px;text-transform:uppercase;letter-spacing:.13em;color:var(--mut);font-weight:600}
+  .navlink:hover{color:var(--txt)}
+
+  /* buttons — rectangular, uppercase, minimal */
+  .btn{border-radius:4px;text-transform:uppercase;letter-spacing:.1em;font-size:12px;font-weight:600;
+    padding:13px 22px;border:1px solid rgba(255,255,255,.18);background:transparent;color:var(--txt)}
+  .btn:hover{border-color:var(--txt);background:rgba(255,255,255,.04)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#ffffff}
+  .btn.primary:hover{background:var(--accent2);border-color:var(--accent2);filter:none}
+  .btn.ghost{border-color:transparent}
+  .btn.sm{padding:9px 14px;font-size:11px}
+
+  /* quiet top strip (was a striped warning) */
+  .protobar{background:var(--bg2);border-bottom:1px solid var(--line);color:var(--mut);
+    text-transform:uppercase;letter-spacing:.14em;font-size:10.5px;font-weight:600;padding:9px 12px}
+
+  /* hero — big uppercase statement, cinematic */
+  .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line);
+    background:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px),radial-gradient(1200px 560px at 80% -20%,rgba(99,102,241,.10),transparent 62%),var(--bg);
+    background-size:34px 34px,34px 34px,auto,auto}
+  .hero .container{padding-top:104px;padding-bottom:104px;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
+  .eyebrow{display:inline-flex;align-items:center;gap:9px;font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--mut);border:none;background:none;padding:0;margin-bottom:26px}
+  .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+  .hero h1{font-size:clamp(40px,6vw,76px);line-height:1.02;font-weight:600;text-transform:uppercase;letter-spacing:-.02em;margin:0 0 22px}
+  .hero h1 b{background:none;-webkit-text-fill-color:currentColor;color:var(--accent2)}
+  .hero p.lead{font-size:17px;max-width:520px;color:#aab2bd}
+  .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:34px}
+  .heroart{position:relative;aspect-ratio:1/.96;border:1px solid var(--line);border-radius:14px;overflow:hidden;
+    background:linear-gradient(180deg,#0c1014,#070809);box-shadow:0 40px 120px rgba(0,0,0,.6)}
+  .heroart .grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:32px 32px}
+  #heroCanvas{position:absolute;inset:0;width:100%;height:100%;cursor:grab}
+  .heroart .tag{position:absolute;left:16px;bottom:14px;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--mut);background:rgba(7,8,10,.6);padding:5px 10px;border-radius:5px}
+  #heroFallback{display:none;position:absolute;inset:0;align-items:center;justify-content:center}
+  @media(max-width:820px){.hero .container{grid-template-columns:1fr;gap:40px;padding-top:64px;padding-bottom:64px}}
+
+  /* generic sections — more air */
+  section{padding:104px 0}
+  .sec-h{text-align:center;max-width:660px;margin:0 auto 56px}
+  .sec-h h2{font-size:clamp(28px,3.6vw,44px);text-transform:uppercase;letter-spacing:-.015em;font-weight:600}
+  .sec-h p{color:var(--mut);font-size:16px;margin-top:14px}
+  .kicker{color:var(--accent2);font-weight:600;text-transform:uppercase;letter-spacing:.2em;font-size:11px;margin-bottom:14px}
+
+  /* reveal on scroll */
+  .reveal{opacity:0;transform:translateY(26px);transition:opacity .8s var(--ease),transform .8s var(--ease)}
+  .reveal.in{opacity:1;transform:none}
+  .reveal.d1{transition-delay:.08s}.reveal.d2{transition-delay:.16s}.reveal.d3{transition-delay:.24s}.reveal.d4{transition-delay:.32s}.reveal.d5{transition-delay:.4s}
+
+  /* stat strip */
+  .strip{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:48px 0}
+  .strip .container{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;text-align:center}
+  .strip .v{font-family:var(--mono);font-size:clamp(26px,3.4vw,40px);font-weight:700;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+  .strip .k{font-family:var(--mono)}
+  .strip .k{color:var(--mut);font-size:11px;margin-top:8px;text-transform:uppercase;letter-spacing:.14em}
+  @media(max-width:680px){.strip .container{grid-template-columns:repeat(2,1fr);gap:30px}}
+
+  /* interactive deep-dive tabs */
+  .dive{display:grid;grid-template-columns:300px 1fr;gap:24px;align-items:start}
+  .divetabs{display:flex;flex-direction:column;gap:8px}
+  .divetab{text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;cursor:pointer;color:var(--txt);font:inherit;transition:.2s var(--ease)}
+  .divetab:hover{border-color:#39414c}
+  .divetab.on{border-color:var(--accent);background:linear-gradient(90deg,rgba(99,102,241,.08),transparent)}
+  .divetab b{display:block;font-size:14px;letter-spacing:.02em}
+  .divetab span{font-size:13px;color:var(--mut)}
+  .divepanel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:30px;min-height:280px}
+  .divepanel h3{font-size:21px}
+  .divepanel ul{margin:16px 0 0;padding-left:18px;color:#b4bcc7}
+  .divepanel li{margin:9px 0}
+  @media(max-width:760px){.dive{grid-template-columns:1fr}.divetabs{flex-direction:row;overflow-x:auto}}
+
+  /* features */
+  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px}
+  .fcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:28px 24px;transition:transform .25s var(--ease),border-color .25s}
+  .fcard:hover{transform:translateY(-4px);border-color:#39414c}
+  .fcard .ic{width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;
+    background:rgba(255,255,255,.04);border:1px solid var(--line);margin-bottom:16px;transition:background .25s,border-color .25s}
+  .fcard:hover .ic{background:rgba(99,102,241,.1);border-color:#2c2f63}
+  .fcard h3{font-size:15px;margin-bottom:8px;letter-spacing:.01em}.fcard p{font-size:14px;margin:0;color:var(--mut)}
+
+  /* make gallery */
+  .gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+  .gcard{aspect-ratio:1/1;border:1px solid var(--line);border-radius:12px;background:var(--panel);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--mut);transition:.25s var(--ease)}
+  .gcard:hover{border-color:var(--accent);color:var(--txt);transform:translateY(-3px)}
+  .gcard svg{width:60px;height:60px;opacity:.85}
+  .gcard b{font-size:12px;color:var(--txt);text-transform:uppercase;letter-spacing:.08em}
+
+  /* built with claude */
+  .claude{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .claudegrid{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:center}
+  @media(max-width:820px){.claudegrid{grid-template-columns:1fr}}
+  .chat{background:#0a0d10;border:1px solid var(--line);border-radius:14px;padding:18px;height:380px;overflow:hidden;position:relative;display:flex;flex-direction:column;gap:10px;justify-content:flex-end}
+  .bub{max-width:84%;padding:11px 14px;border-radius:12px;font-size:13.5px;line-height:1.5;animation:pop .4s var(--ease)}
+  .bub.me{align-self:flex-end;background:#181d24;border:1px solid var(--line);border-bottom-right-radius:4px}
+  .bub.ai{align-self:flex-start;background:rgba(99,102,241,.09);border:1px solid #2c2f63;border-bottom-left-radius:4px;color:#c5c9ff}
+  .bub .who{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-bottom:4px}
+  @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+  .timeline{position:relative;margin-top:14px;padding-left:24px}
+  .timeline::before{content:"";position:absolute;left:6px;top:4px;bottom:4px;width:1px;background:linear-gradient(var(--accent),transparent)}
+  .tl{position:relative;margin-bottom:18px}
+  .tl::before{content:"";position:absolute;left:-24px;top:5px;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(99,102,241,.14)}
+  .tl b{font-size:14.5px}.tl p{font-size:13px;margin:3px 0 0;color:var(--mut)}
+
+  /* how it works */
+  .how{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+  .how .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:26px}
+  .how .card h3{font-size:15px;display:flex;gap:9px;align-items:center;letter-spacing:.01em}
+  .finalcta{text-align:center;background:radial-gradient(800px 340px at 50% 130%,rgba(99,102,241,.12),transparent 62%)}
+  .finalcta h2{text-transform:uppercase;letter-spacing:-.015em}
+  .footer .navlink{font-size:11px}
+  /* small-screen nav: wrap instead of overflowing */
+  @media(max-width:640px){
+    .nav .container{flex-wrap:wrap;height:auto;min-height:60px;padding-top:10px;padding-bottom:10px;gap:12px 14px}
+    .hero h1{font-size:clamp(34px,9vw,52px)}
+  }
+</style>
+</head>
+<body>
+<div class="protobar">Preview build — Forge3D is still evolving. Thanks for trying it out!</div>
+
+<nav class="nav"><div class="container">
+  <a class="brand" href="index.html">
+    <svg class="logo" viewBox="0 0 32 32"><path d="M16 4 28 11v14L16 32 4 25V11z" fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round"/><path d="M16 4v9m0 0 11.5-6.5M16 13 4.5 6.5" stroke="#818cf8" stroke-width="1.6" fill="none"/></svg>
+    FORGE<b>3D</b>
+  </a>
+  <div class="spacer"></div>
+  <a class="navlink" href="#capabilities">Capabilities</a>
+  <a class="navlink" href="#make">Make</a>
+  <a class="navlink" href="#claude">Built with Claude</a>
+  <span id="navAuth"></span>
+</div></nav>
+
+<!-- HERO -->
+<header class="hero"><div class="container">
+  <div>
+    <span class="eyebrow"><span class="dot"></span> Runs in your browser · nothing to install</span>
+    <h1>From idea to <b>printable part</b>.</h1>
+    <p class="lead">Forge3D is a complete 3D design, edit, slice and export suite that runs entirely in your browser. Build from 100+ editable shapes, import and break apart STLs, cut &amp; merge, add print connectors, preview layers and export STL for any printer.</p>
+    <div class="cta">
+      <a class="btn primary" id="ctaStart" href="auth.html?mode=signup">Create your account</a>
+      <a class="btn" id="ctaOpen" href="#capabilities">See how it works →</a>
+    </div>
+  </div>
+  <div class="heroart">
+    <div class="grid"></div>
+    <canvas id="heroCanvas"></canvas>
+    <div id="heroFallback"><svg viewBox="0 0 320 280" width="76%" fill="none" stroke-linejoin="round"><path d="M160 48 256 100 160 152 64 100Z" stroke="#6366f1" stroke-width="2.6"/><path d="M64 100 160 152 160 236 64 184Z" stroke="#818cf8" stroke-width="2.2"/><path d="M256 100 160 152 160 236 256 184Z" stroke="#6366f1" stroke-width="2.2" opacity=".85"/></svg></div>
+    <div class="tag" id="heroTag">drag to spin · auto-cycling shapes</div>
+  </div>
+</div></header>
+
+<!-- STAT STRIP -->
+<div class="strip"><div class="container" id="strip">
+  <div><div class="v" data-count="111" data-suffix="+">0</div><div class="k">editable shapes</div></div>
+  <div><div class="v" data-count="100" data-suffix="%">0</div><div class="k">in your browser</div></div>
+  <div><div class="v" data-count="0" data-text="0">0</div><div class="k">installs needed</div></div>
+  <div><div class="v" data-count="0" data-text="∞">0</div><div class="k">STL exports</div></div>
+</div></div>
+
+<!-- DEEP DIVE TABS -->
+<section id="capabilities"><div class="container">
+  <div class="sec-h reveal"><div class="kicker">The full pipeline</div><h2>One tool from idea to printer</h2>
+    <p>Most projects bounce between a modeler, a repair tool and a slicer. Forge3D does the whole path in one place.</p></div>
+  <div class="dive reveal">
+    <div class="divetabs" id="divetabs">
+      <button class="divetab on" data-k="design"><b>① Design</b><span>Shapes, drawing &amp; exact sizing</span></button>
+      <button class="divetab" data-k="edit"><b>② Edit</b><span>Cut, merge, hollow, parameters</span></button>
+      <button class="divetab" data-k="break"><b>③ Break &amp; connect</b><span>Split STLs, slice, connectors</span></button>
+      <button class="divetab" data-k="export"><b>④ Slice &amp; export</b><span>Layer preview &amp; STL out</span></button>
+    </div>
+    <div class="divepanel" id="divepanel"></div>
+  </div>
+</div></section>
+
+<!-- FEATURES -->
+<section style="padding-top:0"><div class="container">
+  <div class="sec-h reveal"><h2>Everything in one place</h2><p>Create your account to save your designs, pick up where you left off, and unlock the full toolset — design, edit, repair and export.</p></div>
+  <div class="features">
+    <div class="fcard reveal d1"><div class="ic">🧩</div><h3>100+ editable shapes</h3><p>Prisms, gears, stars, polyhedra, beams, lathed forms and more — each with live parameters (sides, teeth, holes) and exact mm sizing.</p></div>
+    <div class="fcard reveal d2"><div class="ic">📥</div><h3>Import &amp; break STLs</h3><p>Drop in any STL, split it into its separate bodies, or plane-cut a big model into printable pieces — with a live preview.</p></div>
+    <div class="fcard reveal d3"><div class="ic">✂️</div><h3>Cut, merge &amp; hollow</h3><p>Real boolean operations make openings, fuse parts and shell solids to save filament — all on your device.</p></div>
+    <div class="fcard reveal d1"><div class="ic">🔗</div><h3>Print connectors</h3><p>Pegs &amp; matching holes (round, square, dovetail…) at every cut so printed pieces line up and glue together.</p></div>
+    <div class="fcard reveal d2"><div class="ic">📐</div><h3>Measure &amp; units</h3><p>Always-on dimensions, a distance tool, height-off-plate, and mm / cm / inch — accurate to the millimetre.</p></div>
+    <div class="fcard reveal d3"><div class="ic">🖨️</div><h3>Slice &amp; export STL</h3><p>Layer preview, rough print stats and one-click binary STL for Cura, PrusaSlicer or Bambu.</p></div>
+  </div>
+</div></section>
+
+<!-- WHAT YOU CAN MAKE -->
+<section id="make" style="padding-top:0"><div class="container">
+  <div class="sec-h reveal"><div class="kicker">Make anything</div><h2>From brackets to keepsakes</h2>
+    <p>Functional parts, repairs, fixtures, props — if it prints, you can build it here.</p></div>
+  <div class="gallery" id="gallery"></div>
+</div></section>
+
+<!-- BUILT WITH CLAUDE -->
+<section class="claude" id="claude"><div class="container">
+  <div class="sec-h reveal"><div class="kicker">How it was built</div><h2>Designed &amp; built with Claude</h2>
+    <p>Forge3D wasn't hand-coded line by line. It was built in plain-English conversation with <b>Claude</b>, Anthropic's AI — every feature described, generated, tested in a live browser, and refined until it worked.</p></div>
+  <div class="claudegrid">
+    <div class="reveal">
+      <div class="chat" id="chat"></div>
+      <p class="formnote" style="text-align:center;margin-top:10px">Illustrative example — how features take shape with Claude.</p>
+    </div>
+    <div class="reveal d2">
+      <h3 style="margin-bottom:6px">A conversation, not a codebase</h3>
+      <p>Each capability below started as a sentence. Claude wrote the Three.js engine integration, an in-browser CSG boolean engine, 100+ parametric shape generators, the slicer preview and the binary STL exporter — then verified each one by actually running it.</p>
+      <div class="timeline" id="timeline">
+        <div class="tl reveal"><b>The 3D editor &amp; STL export</b><p>Viewport, gizmos, primitives and binary STL that prints upright.</p></div>
+        <div class="tl reveal"><b>A real boolean engine</b><p>Embedded CSG for watertight cut / merge / hollow — no external dependency.</p></div>
+        <div class="tl reveal"><b>Draw, measure &amp; units</b><p>Sketch on the plate with live dimensions, in mm / cm / inch.</p></div>
+        <div class="tl reveal"><b>Import &amp; break STLs</b><p>Split bodies and plane-cut big models, previewing every cut and connector.</p></div>
+        <div class="tl reveal"><b>100+ parametric shapes</b><p>A whole catalogue generated and made editable, with a live preview.</p></div>
+        <div class="tl reveal"><b>This site &amp; admin</b><p>Landing, accounts and an admin panel — built the same way.</p></div>
+      </div>
+      <div class="cta"><a class="btn ghost" href="https://www.anthropic.com/claude" target="_blank" rel="noopener">What is Claude? ↗</a></div>
+    </div>
+  </div>
+</div></section>
+
+<!-- HOW IT WORKS -->
+<section><div class="container">
+  <div class="sec-h reveal"><div class="kicker">Under the hood</div><h2>Fast, private, and built to feel effortless</h2></div>
+  <div class="how">
+    <div class="card reveal d1"><h3>🔒 Private by design</h3><p>All modelling, slicing and export happen on your device. Your designs are never uploaded — save and load are just local files you control.</p></div>
+    <div class="card reveal d2"><h3>⚡ Smooth &amp; responsive</h3><p>A modern WebGL engine with on-demand rendering — it stays fluid while you work and calms down the moment you pause.</p></div>
+    <div class="card reveal d3"><h3>🧰 Everything in one place</h3><p>Design, edit, repair, break down and export — no jumping between separate apps to get from idea to printable model.</p></div>
+  </div>
+</div></section>
+
+<!-- FINAL CTA -->
+<section class="finalcta"><div class="container reveal">
+  <h2 style="font-size:clamp(26px,3.4vw,40px)">Ready to build something printable?</h2>
+  <p class="muted" style="max-width:480px;margin:0 auto 22px">Create your account and place your first shape in seconds. Already with us? Just log in.</p>
+  <div class="cta" style="justify-content:center">
+    <a class="btn primary" href="auth.html?mode=signup">Create your account</a>
+    <a class="btn" href="auth.html">Log in</a>
+  </div>
+</div></section>
+
+<footer class="footer"><div class="container">
+  <span class="brand" style="font-size:15px">FORGE<b>3D</b></span>
+  <span class="spacer" style="flex:1"></span>
+  <a class="navlink" href="auth.html">Open app</a>
+  <a class="navlink" href="auth.html?mode=signup">Sign up</a>
+  <a class="navlink" href="#claude">Built with Claude</a>
+  <span class="muted">© Forge3D — prototype</span>
+</div></footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="forge-auth.js"></script>
+<script>
+/* ---------- nav auth state ---------- */
+(function(){
+  const u=Forge.current(), navAuth=document.getElementById("navAuth");
+  if(u){
+    navAuth.innerHTML=(u.role==="admin"?'<a class="navlink" href="admin.html" style="margin-right:14px">Admin</a>':'')+
+      '<a class="btn sm" href="Forge3D.html">Open app</a> <a class="btn sm ghost" href="#" id="logoutBtn">Log out</a>';
+    document.getElementById("logoutBtn").onclick=(e)=>{e.preventDefault();Forge.logout();location.reload();};
+    const s=document.getElementById("ctaStart"); s.textContent="Open Forge3D"; s.href="Forge3D.html";
+  }else{
+    navAuth.innerHTML='<a class="navlink" href="auth.html" style="margin-right:14px">Log in</a><a class="btn sm primary" href="auth.html?mode=signup">Sign up</a>';
+  }
+})();
+
+/* ---------- scroll reveal ---------- */
+const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add("in");io.unobserve(e.target);}})},{threshold:.12});
+document.querySelectorAll(".reveal").forEach(el=>io.observe(el));
+
+/* ---------- animated counters ---------- */
+const cio=new IntersectionObserver((es)=>{es.forEach(e=>{ if(!e.isIntersecting) return; cio.unobserve(e.target);
+  const el=e.target, txt=el.dataset.text, suf=el.dataset.suffix||"", to=+el.dataset.count;
+  if(txt){ el.textContent=txt; return; }
+  let st=null; const dur=1100;
+  function step(t){ st=st||t; const p=Math.min(1,(t-st)/dur); el.textContent=Math.round(to*(1-Math.pow(1-p,3)))+suf; if(p<1)requestAnimationFrame(step); }
+  requestAnimationFrame(step);
+})},{threshold:.5});
+document.querySelectorAll("#strip .v").forEach(el=>cio.observe(el));
+
+/* ---------- deep-dive tabs ---------- */
+const DIVE={
+  design:{h:"Design — start from a shape or draw one",items:["Pick from 100+ shapes in a searchable dropdown with a live 3D preview","Draw rectangles, circles and polygons straight onto the build plate","Type exact dimensions; switch between mm, cm and inch anytime","Add extruded 3D text for labels and nameplates"]},
+  edit:{h:"Edit — shape it exactly how you need",items:["Resize by typing W·D·H, with optional locked proportions","Tweak each shape's own parameters (sides, teeth, hole size…) live","Boolean cut &amp; merge to make openings and fuse parts","Hollow any solid to a chosen wall thickness to save filament"]},
+  break:{h:"Break &amp; connect — tame big or imported models",items:["Import any STL and edit it like a native part","Split a model into its separate bodies automatically","Plane-cut into equal pieces with a live preview of every cut","Auto-add connector pins (round, square, dovetail…) so pieces align"]},
+  export:{h:"Slice &amp; export — hand off to your printer",items:["Layer-by-layer slice preview with adjustable layer height","Rough print stats: layers, volume, filament and time estimate","One-click binary STL, oriented to print upright","Save / load projects as local files — nothing leaves your device"]}
+};
+const panel=document.getElementById("divepanel");
+function showDive(k){ const d=DIVE[k]; panel.innerHTML="<h3>"+d.h+"</h3><ul>"+d.items.map(i=>"<li>"+i+"</li>").join("")+"</ul>";
+  document.querySelectorAll(".divetab").forEach(b=>b.classList.toggle("on",b.dataset.k===k)); }
+document.querySelectorAll(".divetab").forEach(b=>b.onclick=()=>showDive(b.dataset.k));
+showDive("design");
+
+/* ---------- "make" gallery ---------- */
+const SH={
+  gear:'<path d="M32 8v6M32 50v6M8 32h6M50 32h6M15 15l4 4M45 45l4 4M49 15l-4 4M19 45l-4 4" stroke="#818cf8" stroke-width="3"/><circle cx="32" cy="32" r="15" stroke="#6366f1" stroke-width="3"/><circle cx="32" cy="32" r="6" stroke="#6366f1" stroke-width="3"/>',
+  bracket:'<path d="M16 12v40h32" stroke="#6366f1" stroke-width="4"/><path d="M16 12h14v14H16z" stroke="#818cf8" stroke-width="2.5"/>',
+  vase:'<path d="M24 12h16c-2 8-6 10-6 18s6 14 6 22H24c0-8 6-14 6-22s-4-10-6-18z" stroke="#6366f1" stroke-width="3"/>',
+  knob:'<circle cx="32" cy="32" r="16" stroke="#6366f1" stroke-width="3"/><path d="M32 16v8M32 40v8M16 32h8M40 32h8" stroke="#818cf8" stroke-width="3"/>',
+  phone:'<rect x="18" y="14" width="28" height="36" rx="4" stroke="#6366f1" stroke-width="3"/><path d="M22 50l20-30" stroke="#818cf8" stroke-width="2.5"/>',
+  star:'<path d="M32 10 39 27 57 28 43 39 48 56 32 46 16 56 21 39 7 28 25 27Z" stroke="#6366f1" stroke-width="3"/>'
+};
+const G=[["Gears &amp; mechanisms","gear"],["Brackets &amp; mounts","bracket"],["Vases &amp; planters","vase"],["Knobs &amp; handles","knob"],["Phone stands","phone"],["Toys &amp; keepsakes","star"]];
+document.getElementById("gallery").innerHTML=G.map((g,i)=>'<div class="gcard reveal d'+((i%4)+1)+'"><svg viewBox="0 0 64 64" fill="none" stroke-linejoin="round">'+SH[g[1]]+'</svg><b>'+g[0]+'</b></div>').join("");
+document.querySelectorAll("#gallery .reveal").forEach(el=>io.observe(el));
+
+/* ---------- "built with Claude" chat animation ---------- */
+const SCRIPT=[
+  ["me","Create a browser-based 3D editor with primitives and STL export."],
+  ["ai","Done — WebGL viewport, transform gizmos and a binary STL exporter that prints upright. ✓"],
+  ["me","Add boolean tools to cut openings and combine parts."],
+  ["ai","Embedded a watertight CSG engine — Cut, Merge and Hollow, all in-browser. ✓"],
+  ["me","Offer a large library of editable shapes."],
+  ["ai","Generated 100+ parametric shapes with live previews and adjustable parameters. ✓"],
+  ["me","Let users import and split large STL models."],
+  ["ai","Added STL import, auto body-splitting and plane cuts with on-screen previews and connectors. ✓"],
+  ["me","Make the interface polished and efficient."],
+  ["ai","Refined the UI and added on-demand rendering so it stays smooth. ✓"]
+];
+const chat=document.getElementById("chat"); let ci=0, started=false;
+function pushBub(){
+  const [who,txt]=SCRIPT[ci%SCRIPT.length];
+  const b=document.createElement("div"); b.className="bub "+who;
+  b.innerHTML='<span class="who">'+(who==="me"?"Prompt":"Claude")+'</span>'+txt;
+  chat.appendChild(b);
+  while(chat.children.length>5) chat.removeChild(chat.firstChild);
+  ci++;
+}
+const chatIO=new IntersectionObserver((es)=>{es.forEach(e=>{ if(e.isIntersecting && !started){ started=true; pushBub();
+  setInterval(()=>{ if(!document.hidden) pushBub(); },2300); }})},{threshold:.3});
+chatIO.observe(chat);
+
+/* ---------- live 3D hero ---------- */
+(function(){
+  const canvas=document.getElementById("heroCanvas");
+  if(typeof THREE==="undefined"){ canvas.style.display="none"; document.getElementById("heroFallback").style.display="flex"; document.getElementById("heroTag").style.display="none"; return; }
+  const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  const scene=new THREE.Scene();
+  const cam=new THREE.PerspectiveCamera(45,1,0.1,100); cam.position.set(0,0,6);
+  scene.add(new THREE.AmbientLight(0xffffff,0.7));
+  const dl=new THREE.DirectionalLight(0xffffff,0.95); dl.position.set(3,5,4); scene.add(dl);
+  const dl2=new THREE.DirectionalLight(0x2dd4ff,0.4); dl2.position.set(-4,-2,-3); scene.add(dl2);
+  const group=new THREE.Group(); scene.add(group);
+  const geos=[ new THREE.IcosahedronGeometry(1.6,0), new THREE.TorusKnotGeometry(1.05,0.34,140,18,2,3),
+    new THREE.BoxGeometry(2.1,2.1,2.1), new THREE.ConeGeometry(1.6,2.5,6), new THREE.TorusGeometry(1.25,0.46,22,60), new THREE.DodecahedronGeometry(1.6) ];
+  let mesh=null, edges=null, idx=0;
+  function setShape(i){ if(mesh){ group.remove(mesh,edges); mesh.geometry.dispose(); edges.geometry.dispose(); mesh.material.dispose(); }
+    const g=geos[i];
+    mesh=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0x6366f1,roughness:0.42,metalness:0.12,flatShading:true}));
+    edges=new THREE.LineSegments(new THREE.EdgesGeometry(g),new THREE.LineBasicMaterial({color:0xffd0a0,transparent:true,opacity:.55}));
+    group.add(mesh,edges); group.scale.setScalar(0.01); }
+  setShape(0);
+  function size(){ const r=canvas.getBoundingClientRect(); if(r.width&&r.height){ renderer.setSize(r.width,r.height,false); cam.aspect=r.width/r.height; cam.updateProjectionMatrix(); } }
+  new ResizeObserver(size).observe(canvas); size();
+  let tx=0,ty=0;   // mouse-driven tilt
+  canvas.addEventListener("pointermove",e=>{ const r=canvas.getBoundingClientRect();
+    ty=((e.clientX-r.left)/r.width-0.5)*1.1; tx=((e.clientY-r.top)/r.height-0.5)*0.8; });
+  let visible=true;
+  new IntersectionObserver((es)=>{visible=es[0].isIntersecting;},{threshold:.05}).observe(canvas);
+  let spin=0, last=performance.now(), acc=0;
+  (function loop(){ requestAnimationFrame(loop);
+    if(document.hidden||!visible) { last=performance.now(); return; }
+    const now=performance.now(), dt=Math.min(0.05,(now-last)/1000); last=now;
+    spin+=dt*0.55; acc+=dt;
+    group.scale.setScalar(group.scale.x+(1-group.scale.x)*Math.min(1,dt*4));
+    group.rotation.y=spin+ty; group.rotation.x+=(tx-group.rotation.x)*0.06;
+    if(acc>4.2){ acc=0; idx=(idx+1)%geos.length; setShape(idx); }
+    renderer.render(scene,cam);
+  })();
+})();
+</script>
+</body>
+</html>
