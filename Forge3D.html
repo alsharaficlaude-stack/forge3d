@@ -2123,70 +2123,46 @@ function bpSub3(a,b){return [a[0]-b[0],a[1]-b[1],a[2]-b[2]];}
 function bpCross3(a,b){return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];}
 function bpFan(out, poly){ for(let i=1;i+1<poly.length;i++){ const p0=poly[0],pi=poly[i],pj=poly[i+1];
   out.push(p0[0],p0[1],p0[2], pi[0],pi[1],pi[2], pj[0],pj[1],pj[2]); } }
-// SCANLINE EVEN-ODD fill of the cross-section — coarse but unconditionally robust.
-// Kept as a fallback for cut outlines too messy to assemble into clean loops.
-function bpScanlineCap(segs, ax, c, ua, va){
-  const ns=segs.length/4; if(ns<3) return [];
-  let vmin=Infinity,vmax=-Infinity;
-  for(let i=0;i<segs.length;i+=4){ const v1=segs[i+1],v2=segs[i+3]; if(v1<vmin)vmin=v1; if(v2<vmin)vmin=v2; if(v1>vmax)vmax=v1; if(v2>vmax)vmax=v2; }
-  const span=vmax-vmin; if(span<=0) return [];
-  const step=Math.min(Math.max(span/900, 0.25), span/3);   // scanline spacing: fine but bounded
-  const out=[];
-  const mk=(u,v)=>{ const p=[0,0,0]; p[ua]=u; p[va]=v; p[ax]=c; return p; };
-  const quad=(x0,x1,y0,y1)=>{ const A=mk(x0,y0),B=mk(x1,y0),C=mk(x1,y1),D=mk(x0,y1);
-    const tri=(P0,P1,P2)=>{ const n=bpCross3(bpSub3(P1,P0),bpSub3(P2,P0)); if(n[ax]>0){ const t=P1;P1=P2;P2=t; }
-      out.push(P0[0],P0[1],P0[2],P1[0],P1[1],P1[2],P2[0],P2[1],P2[2]); };
-    tri(A,B,C); tri(A,C,D); };
-  const xs=[];
-  for(let y=vmin+step*0.5; y<vmax; y+=step){
-    xs.length=0;
-    for(let i=0;i<segs.length;i+=4){ const u1=segs[i],v1=segs[i+1],u2=segs[i+2],v2=segs[i+3];
-      if((v1<=y&&v2>y)||(v2<=y&&v1>y)){ xs.push(u1+(u2-u1)*((y-v1)/(v2-v1))); } }
-    if(xs.length<2) continue;
-    xs.sort((a,b)=>a-b);
-    const y0=y-step*0.5, y1=y+step*0.5;
-    for(let k=0;k+1<xs.length;k+=2){ if(xs[k+1]-xs[k]>1e-4) quad(xs[k],xs[k+1],y0,y1); }   // even-odd: fill between crossing pairs
-  }
-  return out;
-}
-// Cap the cut at plane (axis=c) with a PROPER planar polygon. Weld the cut segments
-// into closed loops, classify outer boundaries vs holes by even-odd nesting, and
-// earcut each region (THREE.ShapeUtils.triangulateShape). Produces a perfectly flat
-// cut face (no stair-stepping) that shares the wall's boundary — so pieces lay flat
-// and the seam shades cleanly. Falls back to the scanline fill if the outline is too
-// broken to assemble. Cap faces −axis; uv = the two non-axis coords.
-function bpCapTris(segs, ax, c, ua, va){
+// Triangulate a planar cross-section given as 2D cut segments [u1,v1,u2,v2,...].
+// Weld endpoints, build the planar half-edge graph, walk every region-boundary cycle
+// with the right-hand rule (robust through branch/pinch vertices), classify outer vs
+// hole loops by even-odd nesting, and earcut each region. Returns a flat triangle list
+// facing −axis, or [] if the outline is too broken to assemble into clean loops.
+function bpEarcutOutline(segs, ax, c, ua, va){
   const ns=segs.length/4; if(ns<3) return [];
   const W=0.05;                                            // endpoint weld tolerance (mm)
   const idOf=new Map(), pts=[];
   const vid=(x,y)=>{ const k=Math.round(x/W)+"_"+Math.round(y/W); let e=idOf.get(k);
     if(e===undefined){ e=pts.length; pts.push([x,y]); idOf.set(k,e); } return e; };
-  const adj=new Map(), push=(a,b)=>{ let l=adj.get(a); if(!l){ l=[]; adj.set(a,l); } l.push(b); };
-  for(let i=0;i<segs.length;i+=4){ const a=vid(segs[i],segs[i+1]), b=vid(segs[i+2],segs[i+3]); if(a!==b){ push(a,b); push(b,a); } }
-  const used=new Set(), ek=(a,b)=>a<b?a+"|"+b:b+"|"+a, loops=[];
-  let total=0; adj.forEach(l=>total+=l.length); total/=2; let leftover=0;
-  adj.forEach((_,start)=>{
-    for(;;){
-      let nxt=-1; for(const b of adj.get(start)) if(!used.has(ek(start,b))){ nxt=b; break; }
-      if(nxt<0) break;
-      const loop=[start]; let prev=start, cur=nxt, guard=0, closed=false; used.add(ek(prev,cur));
-      while(guard++<200000){
-        if(cur===start){ closed=true; break; }
-        loop.push(cur);
-        const cs=adj.get(cur)||[]; let pick=-1;
-        for(const b of cs) if(b!==prev && !used.has(ek(cur,b))){ pick=b; break; }   // prefer not to backtrack
-        if(pick<0) for(const b of cs) if(!used.has(ek(cur,b))){ pick=b; break; }
-        if(pick<0) break;
-        used.add(ek(cur,pick)); prev=cur; cur=pick;
-      }
-      if(closed && loop.length>=3) loops.push(loop); else leftover+=loop.length;
-    }
-  });
-  if(!loops.length || leftover>total*0.4) return bpScanlineCap(segs,ax,c,ua,va);   // too messy → robust fallback
+  const star=new Map(), seenHE=new Set();
+  const addHE=(a,b)=>{ const k=a+">"+b; if(seenHE.has(k)) return; seenHE.add(k);
+    let l=star.get(a); if(!l){ l=[]; star.set(a,l); } l.push({to:b, ang:Math.atan2(pts[b][1]-pts[a][1], pts[b][0]-pts[a][0])}); };
+  for(let i=0;i<segs.length;i+=4){ const a=vid(segs[i],segs[i+1]), b=vid(segs[i+2],segs[i+3]); if(a!==b){ addHE(a,b); addHE(b,a); } }
+  if(!star.size) return [];
+  star.forEach(l=>l.sort((p,q)=>p.ang-q.ang));
+  const nextHE=(u,v)=>{ const l=star.get(v); if(!l) return -1; let iu=-1;
+    for(let i=0;i<l.length;i++) if(l[i].to===u){ iu=i; break; }
+    return l[(iu<0?0:(iu-1+l.length)%l.length)].to; };   // edge immediately clockwise from the reverse
+  let heCount=0; star.forEach(l=>heCount+=l.length);
+  const usedHE=new Set(), rawLoops=[];
+  star.forEach((l,a)=>{ for(const he0 of l){ const b0=he0.to; if(usedHE.has(a+">"+b0)) continue;
+    let u=a, v=b0, g=0; const loop=[];
+    while(g++<heCount+5){ usedHE.add(u+">"+v); loop.push(u); const w=nextHE(u,v);
+      if(w<0){ loop.length=0; break; }
+      if(v===a && w===b0) break;
+      u=v; v=w; }
+    if(loop.length>=3) rawLoops.push(loop);
+  }});
+  const ek=(a,b)=>a<b?a+"|"+b:b+"|"+a, seenLoop=new Set(), loops=[];
+  rawLoops.forEach(lp=>{ const es=[]; for(let i=0;i<lp.length;i++) es.push(ek(lp[i],lp[(i+1)%lp.length])); es.sort();
+    const key=es.join(","); if(seenLoop.has(key)) return; seenLoop.add(key); loops.push(lp); });   // each cycle appears in both orientations
+  if(!loops.length) return [];
   const area2=lp=>{ let s=0; for(let i=0;i<lp.length;i++){ const p=pts[lp[i]], q=pts[lp[(i+1)%lp.length]]; s+=p[0]*q[1]-q[0]*p[1]; } return s/2; };
   const inside=(lp,pt)=>{ let w=false; for(let i=0,j=lp.length-1;i<lp.length;j=i++){ const a=pts[lp[i]], b=pts[lp[j]];
     if(((a[1]>pt[1])!==(b[1]>pt[1])) && (pt[0] < (b[0]-a[0])*(pt[1]-a[1])/((b[1]-a[1])||1e-9)+a[0])) w=!w; } return w; };
-  const L=loops.map(lp=>({lp, a:Math.abs(area2(lp)), rep:pts[lp[0]]}));
+  const cen=lp=>{ let x=0,y=0; for(const i of lp){ x+=pts[i][0]; y+=pts[i][1]; } return [x/lp.length, y/lp.length]; };
+  const L=loops.map(lp=>({lp, a:Math.abs(area2(lp)), rep:cen(lp)})).filter(o=>o.a>0.05);   // drop dangling-edge spikes
+  if(!L.length) return [];
   L.forEach((o,i)=>{ o.depth=0; L.forEach((q,j)=>{ if(i!==j && q.a>o.a && inside(q.lp,o.rep)) o.depth++; }); });
   const out=[];
   const mk=p=>{ const q=[0,0,0]; q[ua]=p[0]; q[va]=p[1]; q[ax]=c; return q; };
@@ -2202,7 +2178,53 @@ function bpCapTris(segs, ax, c, ua, va){
       const nrm=bpCross3(bpSub3(P1,P0),bpSub3(P2,P0)); if(nrm[ax]>0){ const t=P1;P1=P2;P2=t; }
       out.push(P0[0],P0[1],P0[2],P1[0],P1[1],P1[2],P2[0],P2[1],P2[2]); });
   });
-  return out.length? out : bpScanlineCap(segs,ax,c,ua,va);
+  return out;
+}
+// Robust fallback for cross-sections too messy (self-touching / non-manifold) for the
+// outline walk: rasterise the even-odd fill onto a regular grid, then re-emit the grid
+// region's clean cell-boundary loops through bpEarcutOutline. The grid REGULARISES the
+// mess into shared-vertex loops that always assemble, so the cap comes out flat with a
+// minimal triangulation (no internal striping) — only the silhouette is quantised to
+// the ~0.4mm grid. Raw grid quads are a last resort if even that won't earcut.
+function bpScanlineCap(segs, ax, c, ua, va){
+  const ns=segs.length/4; if(ns<3) return [];
+  let umin=Infinity,umax=-Infinity,vmin=Infinity,vmax=-Infinity;
+  for(let i=0;i<segs.length;i+=4){ const u1=segs[i],v1=segs[i+1],u2=segs[i+2],v2=segs[i+3];
+    if(u1<umin)umin=u1; if(u2<umin)umin=u2; if(u1>umax)umax=u1; if(u2>umax)umax=u2;
+    if(v1<vmin)vmin=v1; if(v2<vmin)vmin=v2; if(v1>vmax)vmax=v1; if(v2>vmax)vmax=v2; }
+  const spanU=umax-umin, spanV=vmax-vmin; if(spanU<=0||spanV<=0) return [];
+  const step=Math.min(Math.max(Math.max(spanU,spanV)/260, 0.35), Math.min(spanU,spanV)/2);
+  const nx=Math.max(1,Math.round(spanU/step)), ny=Math.max(1,Math.round(spanV/step));
+  const fill=new Uint8Array(nx*ny), xs=[];
+  for(let j=0;j<ny;j++){ const y=vmin+(j+0.5)*step; xs.length=0;
+    for(let i=0;i<segs.length;i+=4){ const u1=segs[i],v1=segs[i+1],u2=segs[i+2],v2=segs[i+3];
+      if((v1<=y&&v2>y)||(v2<=y&&v1>y)){ xs.push(u1+(u2-u1)*((y-v1)/(v2-v1))); } }
+    xs.sort((a,b)=>a-b);
+    for(let k=0;k+1<xs.length;k+=2){ let ia=Math.round((xs[k]-umin)/step), ib=Math.round((xs[k+1]-umin)/step);
+      if(ia<0)ia=0; if(ib>nx)ib=nx; for(let i=ia;i<ib;i++) fill[j*nx+i]=1; } }
+  const F=(i,j)=> (i<0||j<0||i>=nx||j>=ny)?0:fill[j*nx+i];
+  const gx=i=>umin+i*step, gy=j=>vmin+j*step;
+  const bseg=[];                                          // clean cell-boundary segments
+  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){ if(!fill[j*nx+i]) continue;
+    if(!F(i-1,j)) bseg.push(gx(i),gy(j), gx(i),gy(j+1));
+    if(!F(i+1,j)) bseg.push(gx(i+1),gy(j), gx(i+1),gy(j+1));
+    if(!F(i,j-1)) bseg.push(gx(i),gy(j), gx(i+1),gy(j));
+    if(!F(i,j+1)) bseg.push(gx(i),gy(j+1), gx(i+1),gy(j+1)); }
+  const clean = bseg.length? bpEarcutOutline(bseg, ax, c, ua, va) : [];
+  if(clean.length) return clean;
+  // last resort: raw filled cells (rare; only if the grid boundary still won't assemble)
+  const out=[]; const mk=(u,v)=>{ const p=[0,0,0]; p[ua]=u; p[va]=v; p[ax]=c; return p; };
+  const quad=(i,j)=>{ const A=mk(gx(i),gy(j)),B=mk(gx(i+1),gy(j)),C=mk(gx(i+1),gy(j+1)),D=mk(gx(i),gy(j+1));
+    const tri=(P0,P1,P2)=>{ const n=bpCross3(bpSub3(P1,P0),bpSub3(P2,P0)); if(n[ax]>0){ const t=P1;P1=P2;P2=t; }
+      out.push(P0[0],P0[1],P0[2],P1[0],P1[1],P1[2],P2[0],P2[1],P2[2]); }; tri(A,B,C); tri(A,C,D); };
+  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++) if(fill[j*nx+i]) quad(i,j);
+  return out;
+}
+// Cap the cut at plane (axis=c): try the exact outline triangulation, else the
+// grid-regularised fallback. Both yield flat, minimally-triangulated faces.
+function bpCapTris(segs, ax, c, ua, va){
+  const r=bpEarcutOutline(segs, ax, c, ua, va);
+  return r.length? r : bpScanlineCap(segs, ax, c, ua, va);
 }
 /* Collapse the coplanar sliver explosion that BSP booleans (connector pegs/holes)
    leave on flat, axis-aligned cut faces: group triangles by axis-aligned plane,
