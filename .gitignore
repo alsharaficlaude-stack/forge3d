@@ -8,3 +8,7 @@ desktop.ini
 
 # Local share bundle
 Forge3D-share.zip
+
+# Local test scaffolding (not for the live site)
+*.stl
+serve.ps1
