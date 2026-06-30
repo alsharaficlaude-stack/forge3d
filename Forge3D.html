@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-<title>Forge3D — 3D design, slice &amp; print in your browser</title>
-<meta name="description" content="Forge3D — a free browser-based 3D design, edit, slice and STL export tool. Build parts from 100+ editable shapes, import and break STLs, add connectors, and export for any 3D printer." />
+<title>Tridze — 3D design, slice &amp; print in your browser</title>
+<meta name="description" content="Tridze — a free browser-based 3D design, edit, slice and STL export tool. Build parts from 100+ editable shapes, import and break STLs, add connectors, and export for any 3D printer." />
 <meta name="theme-color" content="#0b0d10" />
 <meta name="color-scheme" content="dark" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Forge3D" />
-<meta property="og:title" content="Forge3D — browser 3D design &amp; print" />
+<meta name="apple-mobile-web-app-title" content="Tridze" />
+<meta property="og:title" content="Tridze — browser 3D design &amp; print" />
 <meta property="og:description" content="Design, edit, slice and export STL for any 3D printer — free, in your browser." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M16 5 27 11.5v13L16 31 5 24.5v-13z' fill='none' stroke='%236366f1' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M16 5v8m0 0 9.5-5.5M16 13l-9.5-5.5' stroke='%23818cf8' stroke-width='1.6' fill='none'/%3E%3C/svg%3E" />
@@ -19,12 +19,13 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0a0c0f; --panel:#14181e; --panel2:#1c212a; --line:#2b323d; --line2:#39424f;
-    --txt:#f1f3f6; --mut:#9aa4b2; --accent:#6366f1; --accent2:#818cf8;
-    --ok:#3ddc97; --danger:#ff5470; --sel:#2dd4ff;
-    --glass:rgba(22,26,33,.88); --shadow:rgba(0,0,0,.5);
-    --radius:11px; --display:"Space Grotesk",ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif;
-    --mono:"Space Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace; --grid:rgba(255,255,255,.022);
+    --bg:#08080e; --panel:rgba(18,16,30,.66); --panel2:rgba(255,255,255,.05); --line:rgba(255,255,255,.10); --line2:rgba(255,255,255,.18);
+    --txt:#eef0fb; --mut:#9a9cbb; --accent:#a78bff; --accent2:#3fe0ff;
+    --ok:#34e3c0; --danger:#ff6b8b; --sel:#3fe0ff;
+    --glass:rgba(16,14,28,.55); --shadow:rgba(50,24,110,.45);
+    --radius:12px; --display:"Space Grotesk",ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif;
+    --mono:"Space Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace; --grid:rgba(255,255,255,.02);
+    --aurora:linear-gradient(110deg,#a78bff 0%,#ff5cc8 52%,#3fe0ff 100%); --au-v:#a78bff; --au-m:#ff5cc8; --au-c:#3fe0ff;
   }
   :root[data-theme="light"]{
     --bg:#eceff3; --panel:#ffffff; --panel2:#f2f5f9; --line:#d6dde6;
@@ -270,12 +271,60 @@
   #helpCard .kkeys{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;color:var(--mut);font-size:12px}
   #helpCard kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;
     border-radius:6px;padding:2px 7px;font:inherit;font-size:11.5px;font-weight:700;white-space:nowrap;color:var(--txt)}
+
+  /* ============================ AURORA THEME — frosted glass + violet/cyan glow ============================ */
+  body{background:
+      radial-gradient(900px 600px at 50% 74%, rgba(122,90,248,.15), transparent 62%),
+      radial-gradient(680px 460px at 88% 4%, rgba(63,224,255,.08), transparent 60%),
+      radial-gradient(720px 520px at 4% 100%, rgba(255,92,200,.07), transparent 60%),
+      #08080e; background-attachment:fixed;}
+  :root[data-theme="light"] body{background:#eceff3}
+  /* frosted glass shell */
+  header{background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,0)),var(--panel);
+    backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);
+    border-bottom:1px solid var(--line);box-shadow:0 1px 0 rgba(255,255,255,.05),0 10px 34px rgba(0,0,0,.45)}
+  aside{backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);
+    box-shadow:-1px 0 0 rgba(255,255,255,.05),-14px 0 44px rgba(0,0,0,.42)}
+  /* aurora wordmark + dot */
+  .brand b{background:var(--aurora);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .dot{background:var(--au-v);box-shadow:0 0 12px rgba(167,139,255,.9)}
+  /* quiet buttons = subtle glass; primary = aurora gradient with glow */
+  .tbtn{background:rgba(255,255,255,.045);border:1px solid var(--line)}
+  .tbtn:hover{background:rgba(255,255,255,.09);border-color:var(--line2)}
+  .tbtn.ghost{background:transparent;border-color:transparent}
+  .tbtn.ghost:hover{background:rgba(255,255,255,.06);border-color:var(--line)}
+  .tbtn.primary{background:var(--aurora);background-size:170% 100%;background-position:0 0;border:none;color:#0c0814;font-weight:700;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.16),0 6px 22px rgba(167,139,255,.36);
+    transition:background-position .35s ease,filter .15s,box-shadow .15s}
+  .tbtn.primary:hover{background-position:100% 0;filter:brightness(1.04);box-shadow:inset 0 0 0 1px rgba(255,255,255,.24),0 8px 30px rgba(167,139,255,.55)}
+  /* tabs: glowing aurora active */
+  .tab.on{color:#fff;border-bottom-color:transparent;
+    background:linear-gradient(180deg,rgba(167,139,255,.14),transparent);
+    box-shadow:inset 0 -2px 0 0 var(--au-v),0 8px 20px -10px rgba(167,139,255,.8)}
+  /* inputs as inset glass; violet focus; readable native dropdowns */
+  input[type=number],input[type=text],select,textarea{background:rgba(255,255,255,.04);border-color:var(--line)}
+  input:focus,textarea:focus,select:focus{border-color:var(--au-v);box-shadow:0 0 0 3px rgba(167,139,255,.25)}
+  option,optgroup{background:#15121f;color:var(--txt)}
+  .seg button.on{background:var(--aurora);color:#0c0814;font-weight:700}
+  .olrow.sel{background:rgba(63,224,255,.12);box-shadow:inset 2px 0 0 var(--sel)}
+  /* floating glass widgets over the viewport */
+  .addbar,#ctxEditor,.selbar,#recoverBar,#drawHud{
+    background:rgba(16,14,28,.5);backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2);border-color:var(--line)}
+  .viewctl .tbtn,.gizmobar .tbtn{background:rgba(16,14,28,.5);backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2)}
+  .gizmobar .tbtn.on{border-color:var(--au-v);color:#cfc3ff;box-shadow:0 0 16px -4px rgba(167,139,255,.85)}
+  /* the glowing-void viewport — the THREE canvas is transparent, this shows behind it */
+  #viewport{background:
+      radial-gradient(660px 460px at 50% 60%, rgba(122,90,248,.22), transparent 64%),
+      radial-gradient(460px 330px at 74% 18%, rgba(63,224,255,.09), transparent 60%),
+      radial-gradient(500px 380px at 14% 96%, rgba(255,92,200,.07), transparent 60%),
+      #08080e;}
+  :root[data-theme="light"] #viewport{background:#eceff3}
 </style>
 </head>
 <body>
 <div id="app">
   <header>
-    <a class="brand" href="index.html" title="Back to home"><span class="dot"></span> FORGE<b>3D</b></a>
+    <a class="brand" href="index.html" title="Back to home"><span class="dot"></span> <b>Tridze</b></a>
     <button class="tbtn ghost" id="btnNew" title="Clear scene">New</button>
     <button class="tbtn ghost" id="btnSave" title="Download project JSON">Save</button>
     <button class="tbtn ghost" id="btnLoad" title="Upload project JSON">Load</button>
@@ -601,7 +650,7 @@
 
 if (typeof THREE === "undefined") {
   document.body.innerHTML = '<div style="padding:40px;color:#fff;font:16px sans-serif">'
-    + 'Forge3D needs Three.js from a CDN and the network is blocked.<br>'
+    + 'Tridze needs Three.js from a CDN and the network is blocked.<br>'
     + 'Connect to the internet and reload.</div>';
   throw new Error("THREE failed to load");
 }
@@ -1110,25 +1159,26 @@ const ICONS = {
 const viewport = document.getElementById("viewport");
 const scene = new THREE.Scene();
 const THEMES = {
-  dark:  { bg:0x0b0d10, gridA:0x2a323c, gridB:0x1a2026, plate:0x10151b, edge:0x2c3440 },
-  light: { bg:0xeceff3, gridA:0xbcc6d2, gridB:0xd6dde6, plate:0xffffff, edge:0xb6c0cc }
+  dark:  { bg:0x08080e, gridA:0x6a58a6, gridB:0x2f2748, plate:0x0e0a1c, edge:0x7a68c0, popacity:0.42 },
+  light: { bg:0xeceff3, gridA:0xbcc6d2, gridB:0xd6dde6, plate:0xffffff, edge:0xb6c0cc, popacity:1 }
 };
 let themeName = "dark";
 function themeColors(){ return THEMES[themeName]; }
-scene.background = new THREE.Color(THEMES.dark.bg);
+scene.background = null;   // Aurora: transparent canvas so the CSS viewport glow shows through
 
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
 camera.position.set(150, 130, 190);
 
-const renderer = new THREE.WebGLRenderer({antialias:true, preserveDrawingBuffer:true});
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true, preserveDrawingBuffer:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setClearAlpha(0);
 renderer.localClippingEnabled = true;
 viewport.appendChild(renderer.domElement);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(80,160,100); scene.add(key);
-const fill = new THREE.DirectionalLight(0x88aaff, 0.35); fill.position.set(-120,40,-80); scene.add(fill);
-const rim = new THREE.DirectionalLight(0x818cf8, 0.3); rim.position.set(60,30,-140); scene.add(rim);
+const fill = new THREE.DirectionalLight(0x3fe0ff, 0.32); fill.position.set(-120,40,-80); scene.add(fill);
+const rim = new THREE.DirectionalLight(0xa78bff, 0.5); rim.position.set(60,30,-140); scene.add(rim);
 
 /* build plate + grid */
 let BV = {x:220,y:220,z:250};
@@ -1140,7 +1190,7 @@ function buildPlate(){
   grid = new THREE.GridHelper(maxd, Math.round(maxd/10), tc.gridA, tc.gridB);
   grid.position.y = 0.02;
   const pg = new THREE.PlaneGeometry(BV.x,BV.y);
-  plate = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({color:tc.plate}));
+  plate = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({color:tc.plate, transparent:true, opacity:(tc.popacity!=null?tc.popacity:1)}));
   plate.rotation.x = -Math.PI/2;
   const eg = new THREE.EdgesGeometry(new THREE.BoxGeometry(BV.x,BV.z,BV.y));
   plateEdges = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({color:tc.edge}));
@@ -1150,7 +1200,8 @@ function buildPlate(){
 function setTheme(name){
   themeName = (name==="light")?"light":"dark";
   document.documentElement.setAttribute("data-theme", themeName==="light"?"light":"");
-  scene.background.set(themeColors().bg);
+  if(themeName==="light"){ scene.background = new THREE.Color(THEMES.light.bg); renderer.setClearAlpha(1); }
+  else { scene.background = null; renderer.setClearAlpha(0); }   // Aurora dark = transparent canvas over CSS glow
   buildPlate();
   const btn=document.getElementById("btnTheme"); if(btn) btn.textContent = themeName==="light"?"☀":"🌙";
   if(typeof wake==="function") wake(900);
@@ -1854,7 +1905,7 @@ function exportSTL(){
   const buf = new ArrayBuffer(84 + triCount*50);
   const dv = new DataView(buf);
   // 80-byte header (notes the target printer if one is chosen)
-  const header = ("Forge3D STL mm"+(currentPrinter&&currentPrinter!=="Custom"?" for "+currentPrinter:"")).slice(0,79);
+  const header = ("Tridze STL mm"+(currentPrinter&&currentPrinter!=="Custom"?" for "+currentPrinter:"")).slice(0,79);
   for(let i=0;i<80;i++) dv.setUint8(i, i<header.length?header.charCodeAt(i):0);
   dv.setUint32(80, triCount, true);
   let off=84;
@@ -1872,7 +1923,7 @@ function exportSTL(){
     dv.setFloat32(off,cx.x,true);dv.setFloat32(off+4,cx.y,true);dv.setFloat32(off+8,cx.z,true);off+=12;
     dv.setUint16(off,0,true);off+=2;
   }
-  downloadBlob(new Blob([buf],{type:"application/octet-stream"}), "forge3d-"+slugName()+".stl");
+  downloadBlob(new Blob([buf],{type:"application/octet-stream"}), "tridze-"+slugName()+".stl");
   toast(`Exported STL · ${triCount.toLocaleString()} triangles`,"ok");
 }
 function slugName(){
@@ -1897,7 +1948,7 @@ function collectTrianglesFrom(list, center){
 }
 function buildSTLBlob(flat, note){
   const triCount=flat.length/9, buf=new ArrayBuffer(84+triCount*50), dv=new DataView(buf);
-  const header=(note||"Forge3D STL mm").slice(0,79);
+  const header=(note||"Tridze STL mm").slice(0,79);
   for(let i=0;i<80;i++) dv.setUint8(i, i<header.length?header.charCodeAt(i):0);
   dv.setUint32(80,triCount,true); let off=84;
   const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),ab=new THREE.Vector3(),ac=new THREE.Vector3(),n=new THREE.Vector3();
@@ -1941,7 +1992,7 @@ function collectParts(){
 function exportOBJ(){
   if(!parts.length){ toast("Nothing to export","err"); return; }
   const groups=collectParts();
-  let s="# Forge3D OBJ export — units: mm\n", vbase=1, faces=0;
+  let s="# Tridze OBJ export — units: mm\n", vbase=1, faces=0;
   groups.forEach((g,gi)=>{
     const safe=(g.name||("part"+gi)).replace(/\s+/g,"_").replace(/[^A-Za-z0-9_\-]/g,"")||("part"+gi);
     s+="g "+safe+"\no "+safe+"\n";
@@ -1951,7 +2002,7 @@ function exportOBJ(){
     for(let f=0;f<vcount;f+=3){ const a=vbase+f; s+="f "+a+" "+(a+1)+" "+(a+2)+"\n"; faces++; }
     vbase+=vcount;
   });
-  downloadBlob(new Blob([s],{type:"text/plain"}), "forge3d-"+slugName()+".obj");
+  downloadBlob(new Blob([s],{type:"text/plain"}), "tridze-"+slugName()+".obj");
   toast(`Exported OBJ · ${faces.toLocaleString()} faces`,"ok");
 }
 /* minimal STORE-only ZIP (no compression) — enough for the 3MF/OPC container */
@@ -1996,7 +2047,7 @@ function export3MF(){
     +'<model unit="millimeter" xml:lang="en-US" '
     +'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
     +'xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">\n'
-    +' <metadata name="Application">Forge3D</metadata>\n <resources>\n'
+    +' <metadata name="Application">Tridze</metadata>\n <resources>\n'
     +'  <m:colorgroup id="1">\n';
   colors.forEach(c=>{ model+='   <m:color color="'+c+'FF"/>\n'; });
   model+='  </m:colorgroup>\n';
@@ -2028,7 +2079,7 @@ function export3MF(){
     {name:"_rels/.rels", data:enc.encode(rels)},
     {name:"3D/3dmodel.model", data:enc.encode(model)}
   ]);
-  downloadBlob(new Blob([zip],{type:"model/3mf"}), "forge3d-"+slugName()+".3mf");
+  downloadBlob(new Blob([zip],{type:"model/3mf"}), "tridze-"+slugName()+".3mf");
   toast(`Exported 3MF · ${groups.length} part${groups.length>1?"s":""}`,"ok");
 }
 
@@ -2043,7 +2094,7 @@ function downloadBlob(blob, name){
 }
 $("btnSave").addEventListener("click",()=>{
   const data=JSON.stringify(serialize(),null,2);
-  downloadBlob(new Blob([data],{type:"application/json"}),"forge3d-project.json");
+  downloadBlob(new Blob([data],{type:"application/json"}),"tridze-project.json");
   toast("Project saved","ok");
 });
 $("btnLoad").addEventListener("click",()=>$("fileInput").click());
@@ -2053,7 +2104,7 @@ $("fileInput").addEventListener("change",e=>{
   rd.onload=async ()=>{
     try{
       const state=JSON.parse(rd.result);
-      if(!state.parts) throw new Error("not a Forge3D file");
+      if(!state.parts) throw new Error("not a Tridze file");
       if(state.parts.some(p=>p.type==="text") && !loadedFont) await fontReady; // ensure font before rebuilding text
       restore(state); pushUndo();
       frameAll();
@@ -3331,7 +3382,7 @@ offerRecovery();
 setInterval(autosaveNow, 4000);                                  // periodic snapshot
 window.addEventListener("beforeunload", autosaveNow);            // final snapshot on close
 document.addEventListener("visibilitychange",()=>{ if(document.hidden) autosaveNow(); });
-toast("Forge3D ready — add a shape, or draw one with exact dimensions in the Draw tab","ok");
+toast("Tridze ready — add a shape, or draw one with exact dimensions in the Draw tab","ok");
 </script>
 </body>
 </html>
