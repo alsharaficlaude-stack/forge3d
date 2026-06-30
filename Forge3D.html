@@ -3331,6 +3331,27 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     spots.forEach(([u,v])=>{ if(placePin(A,B,axis,coord,lo0+(hi0-lo0)*u,lo1+(hi1-lo1)*v,type,R,H)) any=true; });
     if(!any){ placePin(A,B,axis,coord,(lo0+hi0)/2,(lo1+hi1)/2,type,R,H); }   // fallback: try the centre
   }
+  /* Auto-place connectors at every interior seam between adjacent tiles, then
+     bake the pegs/holes into each tile's geometry. Runs in world space, BEFORE
+     the tiles are laid flat onto plates. Each tile's CSG is built lazily (and
+     cached) inside the chunked loop so even big grids don't lock the tab. */
+  function bpApplyAutoConnectors(tiles, done){
+    const cmap={};
+    tiles.forEach(p=>{ if(p.bpGrid) cmap[p.bpGrid.ix+"_"+p.bpGrid.iy+"_"+p.bpGrid.iz]=p;
+      const c=p.bpCell||{}; p.x0=c.x0;p.x1=c.x1;p.y0=c.y0;p.y1=c.y1;p.z0=c.z0;p.z1=c.z1; p.csg=undefined; });
+    const type=$("bpConnType").value, seams=[];
+    tiles.forEach(A=>{ const g=A.bpGrid; if(!g||!A.bpCell) return;     // one seam per shared face, owned by the lower tile
+      [["x",1,0,0,A.bpCell.x1],["y",0,1,0,A.bpCell.y1],["z",0,0,1,A.bpCell.z1]].forEach(d=>{
+        const B=cmap[(g.ix+d[1])+"_"+(g.iy+d[2])+"_"+(g.iz+d[3])];
+        if(B) seams.push({A,B,axis:d[0],coord:d[4]});
+      });
+    });
+    if(!seams.length){ tiles.forEach(p=>p.csg=undefined); done(); return; }
+    const ensure=p=>{ if(p.csg===undefined){ try{ p.csg=csgFromMesh(p.mesh); }catch(e){ p.csg=null; } } return p.csg; };
+    chunk(seams, s=>{ if(ensure(s.A)&&ensure(s.B)) connBetween(s.A,s.B,s.axis,s.coord,type); },
+      (i,n)=>toast("Adding connectors — "+Math.round(i/Math.max(1,n)*100)+"%"),
+      ()=>{ tiles.forEach(p=>{ if(p.csg){ try{ setPartGeom(p,p.csg); }catch(e){} } p.csg=undefined; }); done(); });
+  }
 
   function meshTris(mesh){ const gg=mesh.geometry, pos=gg.attributes.position; return pos?Math.floor((gg.index?gg.index.count:pos.count)/3):0; }
   function boxCsg(cx,cy,cz,sx,sy,sz){
@@ -3393,14 +3414,19 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
          });
        }, (i,n)=>toast("Cutting pieces — "+Math.round(i/Math.max(1,n)*100)+"%"), ()=>{
          if(made.length<2){ made.forEach(removePart); toast("Couldn't split this model.","err"); btn.disabled=false; return; }
-         removePart(part);
-         const plates=arrangeOntoPlates(made);
-         renderBpResult(plates);
-         if(made[0]) select(made[0]);
-         frameAll(); pushUndo(); updateStats();
-         toast("Split into "+made.length+" pieces on "+plates.length+" plate"+(plates.length>1?"s":""),"ok");
-         btn.disabled=false;
-         if(bpConnPattern===0) setTimeout(bpStartEdit,300);   // Manual placement chosen → drop into the editor
+         const connOn = !$("bpConn") || $("bpConn").checked;     // master "Add alignment pins" toggle
+         const finish=(withConn)=>{
+           removePart(part);                 // keep the source mesh alive through the connector pass (its solidity test raycasts against it)
+           const plates=arrangeOntoPlates(made);
+           renderBpResult(plates);
+           if(made[0]) select(made[0]);
+           frameAll(); pushUndo(); updateStats();
+           toast("Split into "+made.length+" pieces on "+plates.length+" plate"+(plates.length>1?"s":"")+(withConn?" + connectors":""),"ok");
+           btn.disabled=false;
+           if(connOn && bpConnPattern===0) setTimeout(bpStartEdit,300);   // Manual placement chosen → drop into the editor
+         };
+         if(connOn && bpConnPattern>0) bpApplyAutoConnectors(made, ()=>finish(true));   // Auto 1/2/4 per seam → bake pins now
+         else finish(false);
        });
       },30);
      }catch(e){ console.error(e); toast("Split failed: "+e.message,"err"); btn.disabled=false; }
