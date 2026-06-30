@@ -3749,7 +3749,10 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
   function bpAddPin(A,B,axis,coord,a,b,type,R,H){
     if(!seamSolid(axis,coord,a,b)) return false;
     const peg=connectorMesh(axis,coord,a,b,R,H,type), hole=connectorMesh(axis,coord,a,b,R+0.25,H+0.6,type);
-    try{ A.wpos=bpLocalBoolean(A.wpos, peg, "union"); B.wpos=bpLocalBoolean(B.wpos, hole, "subtract"); }catch(e){}
+    try{ A.wpos=bpLocalBoolean(A.wpos, peg, "union"); B.wpos=bpLocalBoolean(B.wpos, hole, "subtract");
+      const c=seamPt(axis,coord,a,b,0), rr=Math.max(R,H/2)+2;   // remember where the peg/socket is so we can tint it for visibility
+      (A.bpPins=A.bpPins||[]).push({x:c[0],y:c[1],z:c[2],r:rr}); (B.bpPins=B.bpPins||[]).push({x:c[0],y:c[1],z:c[2],r:rr});
+    }catch(e){}
     peg.geometry.dispose(); hole.geometry.dispose(); return true;
   }
   function connBetween(A,B,axis,coord,type){
@@ -3828,7 +3831,14 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     //  Generate — 420→1629mm — which exploded the piece count.)
     let m=part.mesh;
     if(g.scale!==1){ m=part.mesh.clone(); m.scale.multiplyScalar(g.scale); m.updateMatrixWorld(true); }
-    bpModelMesh=m;
+    // Raycast proxy with a DoubleSide material so the inside/outside parity test counts
+    // EVERY surface crossing. With the model's normal FrontSide material the exit face is
+    // back-culled, so interior points returned 0 hits → "outside" → pins were rejected
+    // almost everywhere (connectors only ever landed by accident). Shares geometry; not
+    // added to the scene, so it costs nothing to render.
+    bpModelMesh=new THREE.Mesh(m.geometry, new THREE.MeshBasicMaterial({side:THREE.DoubleSide}));
+    bpModelMesh.position.copy(m.position); bpModelMesh.quaternion.copy(m.quaternion); bpModelMesh.scale.copy(m.scale);
+    bpModelMesh.updateMatrixWorld(true);
     const box=new THREE.Box3().setFromObject(m);
     let bx=axisBoundaries(box.min.x,box.max.x,g.nx), by=axisBoundaries(box.min.y,box.max.y,g.ny), bz=axisBoundaries(box.min.z,box.max.z,g.nz);
     const smart = !$("bpSmart") || $("bpSmart").checked;
@@ -3939,9 +3949,27 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     if([q.x,q.y,q.z,q.w].some(Number.isNaN)) return new THREE.Quaternion();   // never hand back a NaN orientation (piece would vanish)
     return q;
   }
+  /* Tint the connector pegs/sockets a bright amber so they're actually visible on
+     the cut faces (otherwise a small same-coloured pin is impossible to spot).
+     Geometry verts are world-baked, so we match them against the stored pin centres
+     regardless of how the piece is later laid flat. */
+  const BP_PIN_COLOR=0xffae00;
+  function bpColorConnectors(p){
+    if(!p.bpPins||!p.bpPins.length) return;
+    const m=p.mesh, g=m.geometry, pos=g.attributes.position; if(!pos) return;
+    const base=new THREE.Color(p.color!=null?p.color:0x8899ff), hi=new THREE.Color(BP_PIN_COLOR);
+    const col=new Float32Array(pos.count*3);
+    for(let i=0;i<pos.count;i++){ const x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i); let near=false;
+      for(let k=0;k<p.bpPins.length;k++){ const pin=p.bpPins[k], dx=x-pin.x,dy=y-pin.y,dz=z-pin.z; if(dx*dx+dy*dy+dz*dz<pin.r*pin.r){ near=true; break; } }
+      const c=near?hi:base; col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
+    g.setAttribute("color", new THREE.BufferAttribute(col,3));
+    m.material.vertexColors=true; m.material.color.set(0xffffff); m.material.needsUpdate=true;
+    p.bpHasPinTint=true;
+  }
   function arrangeOntoPlates(tiles){
     clearPlates();
     bpPlateGroup.visible=true;                    // ensure beds show (may have been hidden by edit/guide)
+    tiles.forEach(p=>{ try{ bpColorConnectors(p); }catch(e){} });   // make pins pop before laying out
     tiles.forEach(p=>{ p.mesh.position.set(0,0,0); p.mesh.quaternion.copy(bpLayFlatQuat(p.mesh)); p.mesh.updateMatrixWorld(true); });   // lay each piece flat on its biggest cut-face
     const pw=Math.max(40,BV.x), pd=Math.max(40,BV.y), gap=8, plateGap=Math.max(30,pw*0.2);
     const items=tiles.map(p=>{ p.mesh.updateMatrixWorld(true); const b=new THREE.Box3().setFromObject(p.mesh),s=new THREE.Vector3(); b.getSize(s); return {p,w:s.x,d:s.z}; });
