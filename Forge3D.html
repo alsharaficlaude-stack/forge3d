@@ -589,7 +589,7 @@
           </div>
           <div class="grp">
             <h4>4 · Connectors</h4>
-            <label class="field" style="cursor:pointer;width:auto;color:var(--mut)"><input type="checkbox" id="bpConn" style="width:auto;margin-right:7px">Add alignment pins between pieces <span style="opacity:.6">(experimental — pieces glue cleanly on the flat cut faces without them)</span></label>
+            <label class="field" style="cursor:pointer;width:auto;color:var(--mut)"><input type="checkbox" id="bpConn" checked style="width:auto;margin-right:7px">Add alignment pins between pieces <span style="opacity:.6">(on by default — untick to just glue the flat cut faces)</span></label>
             <div class="field"><label>Type</label>
               <select id="bpConnType" style="flex:1">
                 <option value="round">Round pin</option>
@@ -4209,13 +4209,18 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     repairPart(p); bpUpdateSummary(); });
   function bpSyncConnUI(){
     if($("bpConnSizeVal")) $("bpConnSizeVal").textContent=($("bpConnSize")?$("bpConnSize").value:8)+" mm";
+    const on = !$("bpConn") || $("bpConn").checked;
     const pat=$("bpConnPattern")?$("bpConnPattern").value:"1";
-    if($("bpConnHint")) $("bpConnHint").textContent = pat==="0"
-      ? "Manual: after splitting you'll click each seam to place pins yourself."
-      : "Pins are added automatically; you can still fine-tune them by hand after splitting.";
+    if($("bpConnHint")) $("bpConnHint").textContent = !on
+      ? "No pins — pieces just glue on the flat cut faces. Tick “Add alignment pins” for connectors."
+      : pat==="0"
+        ? "Manual: after splitting you'll click each seam to place pins yourself."
+        : "Pins added automatically at every seam; fine-tune by hand after splitting.";
   }
   if($("bpConnSize")) $("bpConnSize").addEventListener("input",bpSyncConnUI);
-  if($("bpConnPattern")) $("bpConnPattern").addEventListener("change",bpSyncConnUI);
+  // picking a placement means you want pins → make sure the master toggle is on
+  if($("bpConnPattern")) $("bpConnPattern").addEventListener("change",()=>{ if($("bpConn")) $("bpConn").checked=true; bpSyncConnUI(); });
+  if($("bpConn")) $("bpConn").addEventListener("change",bpSyncConnUI);
   bpSyncConnUI();
   bpUpdateSummary();
 })();
