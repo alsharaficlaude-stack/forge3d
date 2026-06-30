@@ -289,7 +289,7 @@
     <button class="tbtn ghost iconbtn" id="btnTheme" title="Toggle light / dark theme">🌙</button>
     <button class="tbtn ghost iconbtn" id="btnHelp" title="Keyboard shortcuts (?)">?</button>
     <div class="spacer"></div>
-    <button class="tbtn" id="btnImportSTL" title="Import an STL model to edit / slice">Import STL</button>
+    <button class="tbtn" id="btnImportSTL" title="Import a 3D model (STL, OBJ, or GLB) to edit / slice">Import 3D</button>
     <button class="tbtn" id="btnDup" title="Duplicate (Ctrl+D)">Duplicate</button>
     <button class="tbtn primary" id="btnSTL" title="Export binary STL">Export STL</button>
     <button class="tbtn mobtabbtn" id="btnPanel">Panel</button>
@@ -646,12 +646,13 @@
   </div>
 </div>
 <input type="file" id="fileInput" accept=".json,application/json" style="display:none">
-<input type="file" id="stlInput" accept=".stl,model/stl" style="display:none">
+<input type="file" id="stlInput" accept=".stl,.obj,.glb,.gltf,model/stl" style="display:none">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FontLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/TextGeometry.js"></script>
 <script>
@@ -2497,12 +2498,68 @@ function bpWorldPositions(mesh){
   for(let i=0;i<pos.count;i++){ v.set(pos.getX(i),pos.getY(i),pos.getZ(i)).applyMatrix4(m); out[i*3]=v.x; out[i*3+1]=v.y; out[i*3+2]=v.z; }
   return Array.prototype.slice.call(out);
 }
+/* ---------- OBJ / GLB import (STL is handled by importSTLBuffer above) ----------
+   All paths land in meshPartFromTris: a flat Y-up triangle-soup → recentre on X/Z,
+   drop onto the plate, add as an editable mesh part (same as STL). */
+function meshPartFromTris(rawPos, name){
+  const n=rawPos.length/9; if(n<1) throw new Error("no triangles in file");
+  let mnX=Infinity,mnY=Infinity,mnZ=Infinity,mxX=-Infinity,mxZ=-Infinity;
+  for(let i=0;i<rawPos.length;i+=3){ const x=rawPos[i],y=rawPos[i+1],z=rawPos[i+2];
+    if(x<mnX)mnX=x; if(x>mxX)mxX=x; if(y<mnY)mnY=y; if(z<mnZ)mnZ=z; if(z>mxZ)mxZ=z; }
+  const cx=(mnX+mxX)/2, cz=(mnZ+mxZ)/2, dy=mnY, arr=new Array(rawPos.length);
+  for(let i=0;i<rawPos.length;i+=3){ arr[i]=r3(rawPos[i]-cx); arr[i+1]=r3(rawPos[i+1]-dy); arr[i+2]=r3(rawPos[i+2]-cz); }
+  const nm=(name||"Imported").replace(/\.(obj|glb|gltf)$/i,"").slice(0,28)||"Imported";
+  const part=addPart("mesh",{params:{positions:arr}, name:nm, position:[0,0,0]});
+  select(part); pushUndo(); updateStats(); frameAll();
+  const sz=new THREE.Vector3(); part.mesh.geometry.computeBoundingBox(); part.mesh.geometry.boundingBox.getSize(sz);
+  toast("Imported "+nm+" · "+Math.floor(n).toLocaleString()+" tris · "+sz.x.toFixed(0)+"×"+sz.z.toFixed(0)+"×"+sz.y.toFixed(0)+" mm","ok");
+  return part;
+}
+function parseOBJtris(text){
+  const vx=[], out=[], lines=text.split(/\r?\n/);
+  for(let li=0;li<lines.length;li++){ const line=lines[li];
+    if(line[0]==="v" && line[1]===" "){ const p=line.split(/\s+/); vx.push(+p[1],+p[2],+p[3]); }
+    else if(line[0]==="f" && line[1]===" "){ const toks=line.trim().split(/\s+/).slice(1);
+      const idx=toks.map(t=>{ let i=parseInt(t,10); if(i<0) i=vx.length/3+i+1; return (i-1)*3; });
+      for(let k=1;k+1<idx.length;k++){ const a=idx[0],b=idx[k],c=idx[k+1];   // fan-triangulate any n-gon
+        out.push(vx[a],vx[a+1],vx[a+2], vx[b],vx[b+1],vx[b+2], vx[c],vx[c+1],vx[c+2]); } }
+  }
+  if(out.length<9) throw new Error("no faces found");
+  return out;
+}
+function importGLBBuffer(buffer, name){
+  if(!THREE.GLTFLoader) throw new Error("GLB loader unavailable (offline?)");
+  new THREE.GLTFLoader().parse(buffer, "", gltf=>{
+    try{
+      const tris=[], v=new THREE.Vector3(); gltf.scene.updateMatrixWorld(true);
+      gltf.scene.traverse(o=>{ if(o.isMesh && o.geometry){
+        const g=o.geometry.index?o.geometry.toNonIndexed():o.geometry, pos=g.attributes.position, m=o.matrixWorld;
+        for(let i=0;i<pos.count;i++){ v.set(pos.getX(i),pos.getY(i),pos.getZ(i)).applyMatrix4(m); tris.push(v.x,v.y,v.z); }
+      }});
+      if(tris.length<9){ toast("No mesh geometry in that GLB","err"); return; }
+      // glTF is metres; printable models are mm. If it came in tiny, assume m→mm.
+      let mx=0; for(let i=0;i<tris.length;i+=3){ mx=Math.max(mx,Math.abs(tris[i]),Math.abs(tris[i+1]),Math.abs(tris[i+2])); }
+      let scaled=false; if(mx>0 && mx<10){ for(let i=0;i<tris.length;i++) tris[i]*=1000; scaled=true; }
+      meshPartFromTris(tris, name);
+      if(scaled) toast("GLB looked like metres — scaled ×1000 to mm. Resize if wrong.","ok");
+    }catch(err){ console.error(err); toast("Couldn't read GLB: "+err.message,"err"); }
+  }, err=>{ console.error(err); toast("Couldn't parse GLB","err"); });
+}
 $("btnImportSTL").addEventListener("click",()=>$("stlInput").click());
 $("stlInput").addEventListener("change",e=>{
   const f=e.target.files[0]; if(!f) return;
+  const ext=(f.name.split(".").pop()||"").toLowerCase();
   const rd=new FileReader();
-  rd.onload=()=>{ try{ importSTLBuffer(rd.result, f.name); }catch(err){ console.error(err); toast("Couldn't read STL: "+err.message,"err"); } };
-  rd.readAsArrayBuffer(f);
+  if(ext==="obj"){
+    rd.onload=()=>{ try{ meshPartFromTris(parseOBJtris(rd.result), f.name); }catch(err){ console.error(err); toast("Couldn't read OBJ: "+err.message,"err"); } };
+    rd.readAsText(f);
+  } else if(ext==="glb"||ext==="gltf"){
+    rd.onload=()=>{ try{ importGLBBuffer(rd.result, f.name); }catch(err){ console.error(err); toast("Couldn't read GLB: "+err.message,"err"); } };
+    rd.readAsArrayBuffer(f);
+  } else {
+    rd.onload=()=>{ try{ importSTLBuffer(rd.result, f.name); }catch(err){ console.error(err); toast("Couldn't read STL: "+err.message,"err"); } };
+    rd.readAsArrayBuffer(f);
+  }
   e.target.value="";
 });
 
