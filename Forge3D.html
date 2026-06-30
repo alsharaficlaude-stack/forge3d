@@ -369,6 +369,10 @@
               <button class="tbtn ghost" id="btnLayFlat" title="Lay the largest face on the bed" style="flex:2">Lay flat</button>
             </div>
             <div class="field" style="gap:6px">
+              <label style="width:auto">Auto</label>
+              <button class="tbtn ghost" id="btnAutoOrient" title="Rotate to the orientation with the fewest overhangs (least support needed)" style="flex:1">↧ Auto-orient · fewest supports</button>
+            </div>
+            <div class="field" style="gap:6px">
               <label style="width:auto">Array</label>
               <input type="number" id="arrCount" value="3" min="2" max="64" step="1" style="width:46px" title="Copies">
               <input type="number" id="arrGap" value="10" step="1" style="width:54px" title="Gap (mm)">
@@ -539,6 +543,11 @@
             </div>
             <button class="tbtn ghost full" id="btnArrange">Auto-arrange on bed</button>
             <div class="note">Red faces need supports. Auto-arrange spaces parts on the bed.</div>
+          </div>
+          <div class="grp collapsed">
+            <h4>Printability check</h4>
+            <button class="tbtn primary full" id="btnCheckPrint">Check printability</button>
+            <div class="note" id="printReport" style="font-size:12px;line-height:1.7;margin-top:8px">Scans selected parts (or all) for overhangs, thin walls, tiny features &amp; bed adhesion.</div>
           </div>
           <div class="grp">
             <h4>Printer</h4>
@@ -1464,6 +1473,104 @@ function layFlat(){
   dropToPlate(part); m.updateMatrixWorld(true);
   pushUndo(); refreshProps(); updateStats(); toast("Laid flat on its largest face","ok");
 }
+/* Auto-orient: rotate the part to the orientation that needs the fewest supports
+   (least downward-facing / overhang area), among its dominant flat faces + the 6 axes.
+   Differs from Lay-flat, which only maximises the base face regardless of overhangs. */
+function autoOrient(){
+  if(!selected){ toast("Select a part first","err"); return; }
+  const part=selected, m=part.mesh; m.updateMatrixWorld(true);
+  const wp=bakedWorldPositions(part);
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),cc=new THREE.Vector3(),ab=new THREE.Vector3(),ac=new THREE.Vector3(),n=new THREE.Vector3();
+  const tris=[]; const map=new Map();
+  for(let t=0;t<wp.length;t+=9){
+    a.set(wp[t],wp[t+1],wp[t+2]); b.set(wp[t+3],wp[t+4],wp[t+5]); cc.set(wp[t+6],wp[t+7],wp[t+8]);
+    ab.subVectors(b,a); ac.subVectors(cc,a); n.crossVectors(ab,ac); const area=n.length()/2; if(area<1e-7) continue; n.normalize();
+    tris.push({x:n.x,y:n.y,z:n.z,a:area});
+    const key=Math.round(n.x*8)+","+Math.round(n.y*8)+","+Math.round(n.z*8);
+    let e=map.get(key); if(!e){ e={x:n.x,y:n.y,z:n.z,area:0}; map.set(key,e); } e.area+=area;
+  }
+  if(!tris.length){ toast("No geometry to orient","err"); return; }
+  const cands=[]; map.forEach(e=>cands.push(new THREE.Vector3(e.x,e.y,e.z).normalize()));
+  [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(d=>cands.push(new THREE.Vector3(d[0],d[1],d[2])));
+  const thr=-Math.cos((parseFloat($("overhangAngle").value)||45)*Math.PI/180);
+  const down=new THREE.Vector3(0,-1,0), tn=new THREE.Vector3();
+  let best=null;
+  cands.forEach(dir=>{
+    const q=new THREE.Quaternion().setFromUnitVectors(dir.clone().normalize(), down);
+    let over=0, baseA=0;
+    // straight-down faces (tn.y<-0.985) become the bed-resting base — not overhangs.
+    // only faces angled *between* the overhang threshold and vertical-down need support.
+    for(const tr of tris){ tn.set(tr.x,tr.y,tr.z).applyQuaternion(q); if(tn.y<-0.985) baseA+=tr.a; else if(tn.y<thr) over+=tr.a; }
+    if(baseA<1e-4) return;                              // no flat face to rest on in this pose — skip
+    if(!best || over<best.over-1e-6 || (Math.abs(over-best.over)<1e-6 && baseA>best.baseA)) best={q,over,baseA};
+  });
+  if(!best){ toast("No stable flat base found to orient onto","err"); return; }
+  m.quaternion.premultiply(best.q); m.updateMatrixWorld(true);
+  dropToPlate(part); m.updateMatrixWorld(true);
+  pushUndo(); refreshProps(); updateStats();
+  if(overhangOn){ clearOverhang(); applyOverhang(); }
+  toast("Auto-oriented — overhang area minimised","ok");
+}
+
+/* Printability check: per-part scan for overhangs, thin walls (raycast through the
+   solid), tiny features, off-bed/too-tall, and tip-prone small bases. Reports issues
+   and turns on the overhang highlight so the user can see where. */
+function checkPrintability(){
+  const list = (typeof selection!=="undefined" && selection.length) ? selection.slice() : parts.slice();
+  const rep=$("printReport"); if(!rep) return;
+  if(!list.length){ rep.innerHTML='<span class="muted">Nothing to check — add or select a part.</span>'; return; }
+  const esc=s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  const nozzle=0.4, minWall=0.8;
+  const thr=-Math.cos((parseFloat($("overhangAngle").value)||45)*Math.PI/180);
+  const ray=new THREE.Raycaster();
+  const issues=[]; let okCount=0;
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),cc=new THREE.Vector3(),ab=new THREE.Vector3(),ac=new THREE.Vector3(),n=new THREE.Vector3(),ctr=new THREE.Vector3();
+  list.forEach(p=>{
+    const m=p.mesh; m.updateMatrixWorld(true); const wm=m.matrixWorld;
+    const g0=m.geometry, g=g0.index?g0.toNonIndexed():g0, pos=g.attributes.position, N=pos.count;
+    let totA=0, baseA=0, wMin=Infinity, minY=Infinity; const downFaces=[];
+    const faces=N/3, sampleEvery=Math.max(1, Math.floor(faces/300));   // ~300 wall samples max
+    let fi=0;
+    for(let i=0;i<N;i+=3,fi++){
+      a.set(pos.getX(i),pos.getY(i),pos.getZ(i)).applyMatrix4(wm);
+      b.set(pos.getX(i+1),pos.getY(i+1),pos.getZ(i+1)).applyMatrix4(wm);
+      cc.set(pos.getX(i+2),pos.getY(i+2),pos.getZ(i+2)).applyMatrix4(wm);
+      if(a.y<minY)minY=a.y; if(b.y<minY)minY=b.y; if(cc.y<minY)minY=cc.y;
+      ab.subVectors(b,a); ac.subVectors(cc,a); n.crossVectors(ab,ac); const area=n.length()/2; if(area<1e-9) continue; n.normalize();
+      totA+=area; if(n.y<-0.985) baseA+=area;
+      if(n.y<thr) downFaces.push({area, cy:(a.y+b.y+cc.y)/3});   // candidate overhang — confirm it's elevated, not bed-resting
+      if(fi%sampleEvery===0){
+        ctr.copy(a).add(b).add(cc).multiplyScalar(1/3);
+        const dir=n.clone().multiplyScalar(-1);
+        ray.set(ctr.clone().addScaledVector(dir,0.06), dir); ray.far=1e5;
+        const hits=ray.intersectObject(m,false);
+        if(hits.length){ const d=hits[0].distance+0.06; if(d>0.02 && d<wMin) wMin=d; }
+      }
+    }
+    const box=new THREE.Box3().setFromObject(m), s=new THREE.Vector3(); box.getSize(s);
+    // a downward face is only a real overhang if it sits above the bed (not the resting base)
+    let overA=0; const bedTol=minY+0.8; for(const df of downFaces){ if(df.cy>bedTol) overA+=df.area; }
+    const overPct=totA>0?overA/totA*100:0;
+    const offBed=(box.min.x<-BV.x/2-0.5)||(box.max.x>BV.x/2+0.5)||(box.min.z<-BV.y/2-0.5)||(box.max.z>BV.y/2+0.5)||(s.y>BV.z+0.5);
+    const tippy=(baseA>0 && s.y>40 && Math.sqrt(baseA)<s.y*0.15);
+    const tiny=Math.min(s.x,s.y,s.z);
+    const probs=[];
+    if(overPct>5) probs.push("overhangs "+overPct.toFixed(0)+"%");
+    if(wMin<minWall && wMin<Infinity) probs.push("thin walls ~"+wMin.toFixed(2)+"mm");
+    if(tiny<nozzle*2) probs.push("tiny feature "+tiny.toFixed(2)+"mm");
+    if(offBed) probs.push("off-bed / too tall");
+    if(tippy) probs.push("small base — may tip");
+    if(probs.length) issues.push({name:p.name,probs}); else okCount++;
+  });
+  let html='<div><b>'+list.length+'</b> part'+(list.length>1?'s':'')+' checked · <b style="color:#34c759">'+okCount+' OK</b>'+(issues.length?' · <b style="color:#ff9f0a">'+issues.length+' flagged</b>':'')+'</div>';
+  if(!issues.length) html+='<div style="color:#34c759;margin-top:6px">✓ Nothing obvious to fix.</div>';
+  else html+='<ul style="margin:6px 0 0;padding-left:16px">'+issues.map(it=>'<li><b>'+esc(it.name)+'</b>: '+it.probs.join(", ")+'</li>').join('')+'</ul>';
+  html+='<div class="muted" style="margin-top:6px;font-size:11px">Flags walls &lt;'+minWall+'mm, features &lt;'+(nozzle*2)+'mm (0.4mm nozzle), overhangs past '+$("overhangAngle").value+'°. Red faces = need supports.</div>';
+  rep.innerHTML=html;
+  if(!overhangOn){ $("overhang").checked=true; overhangOn=true; applyOverhang(); }
+  toast(issues.length?("Printability: "+issues.length+" part(s) flagged"):"Printability: all good","ok");
+}
+
 function makeArray(){
   if(!selected){ toast("Select a part first","err"); return; }
   const part=selected, m=part.mesh; m.updateMatrixWorld(true);
@@ -1547,6 +1654,8 @@ $("overhang").addEventListener("change",e=>{ overhangOn=e.target.checked; if(ove
 $("btnArrange").addEventListener("click",autoArrange);
 $("btnLayFlat").addEventListener("click",layFlat);
 $("btnArray").addEventListener("click",makeArray);
+if($("btnAutoOrient")) $("btnAutoOrient").addEventListener("click",autoOrient);
+if($("btnCheckPrint")) $("btnCheckPrint").addEventListener("click",checkPrintability);
 document.querySelectorAll("[data-mir]").forEach(b=>b.addEventListener("click",()=>mirrorPart(b.dataset.mir)));
 
 /* ============================================================================
@@ -3502,6 +3611,7 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
   }
   function grid(){
     const part=selected; if(!part) return null;
+    if(part.bpGrid) return null;   // already a split tile — don't recompute a bogus "final size" off it
     part.mesh.updateMatrixWorld(true);
     const box=new THREE.Box3().setFromObject(part.mesh), size=new THREE.Vector3(); box.getSize(size);
     const targetH=parseFloat($("bpHeight").value)||0;
@@ -3539,6 +3649,13 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     return (_bpRay.intersectObject(bpModelMesh,true).length & 1)===1;     // odd crossings = inside the solid
   }
   function seamPt(axis,coord,a,b,off){ return axis==="x"?[coord+off,a,b] : axis==="y"?[a,coord+off,b] : [a,b,coord+off]; }
+  // Is there solid material straddling the cut at (a,b)? Probe shallow (1mm) so thin
+  // walls still qualify, and require the seam plane itself + both sides to be inside.
+  // (The old 2.5mm-both-sides test rejected ~92% of pins on curved/hollow models.)
+  function seamSolid(axis,coord,a,b){
+    const d=1.0, c0=seamPt(axis,coord,a,b,0), m1=seamPt(axis,coord,a,b,-d), p1=seamPt(axis,coord,a,b,d);
+    return ptInModel(c0[0],c0[1],c0[2]) && ptInModel(m1[0],m1[1],m1[2]) && ptInModel(p1[0],p1[1],p1[2]);
+  }
   // place one pin (peg into A, clearance hole into B) at a seam spot, if both sides are solid there
   function placePin(A,B,axis,coord,a,b,type,R,H){
     const pa=seamPt(axis,coord,a,b,-2.5), pb=seamPt(axis,coord,a,b,2.5);
@@ -3573,8 +3690,7 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
   }
   // drop a peg into A and a clearance socket into B at one seam spot, if both sides are solid there
   function bpAddPin(A,B,axis,coord,a,b,type,R,H){
-    const pa=seamPt(axis,coord,a,b,-2.5), pb=seamPt(axis,coord,a,b,2.5);
-    if(!ptInModel(pa[0],pa[1],pa[2]) || !ptInModel(pb[0],pb[1],pb[2])) return false;
+    if(!seamSolid(axis,coord,a,b)) return false;
     const peg=connectorMesh(axis,coord,a,b,R,H,type), hole=connectorMesh(axis,coord,a,b,R+0.25,H+0.6,type);
     try{ A.wpos=bpLocalBoolean(A.wpos, peg, "union"); B.wpos=bpLocalBoolean(B.wpos, hole, "subtract"); }catch(e){}
     peg.geometry.dispose(); hole.geometry.dispose(); return true;
@@ -3592,7 +3708,15 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     else                       spots = [[0.5,0.5]];
     let any=false;
     spots.forEach(([u,v])=>{ if(bpAddPin(A,B,axis,coord,lo0+(hi0-lo0)*u,lo1+(hi1-lo1)*v,type,R,H)) any=true; });
-    if(!any){ bpAddPin(A,B,axis,coord,(lo0+hi0)/2,(lo1+hi1)/2,type,R,H); }   // fallback: try the centre
+    if(!any){   // pattern spots all hit empty space (curved / thin / hollow seam) —
+                // scan the seam face and drop one pin on the most CENTRAL solid spot,
+                // so any seam with material still gets a connector.
+      let best=null, bestScore=1e9; const N=6;
+      for(let i=1;i<N;i++) for(let j=1;j<N;j++){ const u=i/N, v=j/N;
+        const pa=lo0+(hi0-lo0)*u, pb=lo1+(hi1-lo1)*v, c0=seamPt(axis,coord,pa,pb,0);
+        if(ptInModel(c0[0],c0[1],c0[2])){ const sc=Math.abs(u-0.5)+Math.abs(v-0.5); if(sc<bestScore){ bestScore=sc; best=[pa,pb]; } } }
+      if(best) bpAddPin(A,B,axis,coord,best[0],best[1],type,R,H);
+    }
   }
   /* Auto-place connectors at every interior seam between adjacent tiles, working on a
      plain position array per tile (p.wpos) so each pin is a cheap LOCAL boolean.
@@ -3641,8 +3765,12 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     if(!g){ toast("Import or select a model first","err"); return; }
     if(g.total<=1){ toast("Already fits on one plate — nothing to split","ok"); return; }
     if(g.total>600 && !confirm(g.total+" pieces is a lot — may be slow. Continue?")) return;
-    const part=g.part, m=part.mesh;
-    if(g.scale!==1){ m.scale.multiplyScalar(g.scale); m.updateMatrixWorld(true); dropToPlate(part); m.updateMatrixWorld(true); }
+    const part=g.part;
+    // Work on a scaled CLONE so the source model is NEVER permanently resized.
+    // (Baking the scale into the live mesh made the final size compound on every
+    //  Generate — 420→1629mm — which exploded the piece count.)
+    let m=part.mesh;
+    if(g.scale!==1){ m=part.mesh.clone(); m.scale.multiplyScalar(g.scale); m.updateMatrixWorld(true); }
     bpModelMesh=m;
     const box=new THREE.Box3().setFromObject(m);
     let bx=axisBoundaries(box.min.x,box.max.x,g.nx), by=axisBoundaries(box.min.y,box.max.y,g.ny), bz=axisBoundaries(box.min.z,box.max.z,g.nz);
@@ -3750,7 +3878,9 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     }
     let best="-y",bv=-1; for(const k in A){ if(A[k]>bv){ bv=A[k]; best=k; } }
     const D={"+x":[1,0,0],"-x":[-1,0,0],"+y":[0,1,0],"-y":[0,-1,0],"+z":[0,0,1],"-z":[0,0,-1]}[best];
-    return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(D[0],D[1],D[2]), new THREE.Vector3(0,-1,0));
+    const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(D[0],D[1],D[2]), new THREE.Vector3(0,-1,0));
+    if([q.x,q.y,q.z,q.w].some(Number.isNaN)) return new THREE.Quaternion();   // never hand back a NaN orientation (piece would vanish)
+    return q;
   }
   function arrangeOntoPlates(tiles){
     clearPlates();
