@@ -3896,12 +3896,19 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
              btn.disabled=false;
              if(connOn && bpConnPattern===0) setTimeout(bpStartEdit,300);   // Manual placement chosen → drop into the editor
            };
+           // Guarantee watertight pieces: the planar cap (bpSealPiece) misses complex
+           // thin-walled / multi-loop cross-sections (e.g. a caddy), leaving the pieces
+           // open → they print hollow. Weld + fill-holes every piece to fully close it.
+           const sealWatertight=(next)=>{
+             chunk(made, p=>{ try{ const rep=repairGeometry(p.mesh.geometry); if(rep&&rep.geo){ rep.geo.computeVertexNormals(); p.mesh.geometry.dispose(); p.mesh.geometry=rep.geo; } }catch(e){} },
+               (i,n)=>toast("Sealing pieces — "+Math.round(i/Math.max(1,n)*100)+"%"), next);
+           };
            if(withConn){   // connectors' local booleans leave splice cracks on the (axis-aligned) box faces → re-seal
              chunk(made, p=>{ try{ const sealed=bpSealPiece(Array.prototype.slice.call(p.mesh.geometry.attributes.position.array));
                  const ng=new THREE.BufferGeometry(); ng.setAttribute("position", new THREE.Float32BufferAttribute(sealed,3)); ng.computeVertexNormals();
                  p.mesh.geometry.dispose(); p.mesh.geometry=ng; }catch(e){} },
-               (i,n)=>toast("Sealing connectors — "+Math.round(i/Math.max(1,n)*100)+"%"), arrange);
-           } else arrange();
+               (i,n)=>toast("Sealing connectors — "+Math.round(i/Math.max(1,n)*100)+"%"), ()=>sealWatertight(arrange));
+           } else sealWatertight(arrange);
          };
          if(connOn && bpConnPattern>0) bpApplyAutoConnectors(made, ()=>finish(true));   // Auto 1/2/4 per seam → bake pins now
          else finish(false);
