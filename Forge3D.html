@@ -580,7 +580,7 @@
           </div>
           <div class="grp">
             <h4>4 · Connectors</h4>
-            <label class="field" style="cursor:pointer;width:auto;color:var(--mut)"><input type="checkbox" id="bpConn" checked style="width:auto;margin-right:7px">Add alignment pins between pieces</label>
+            <label class="field" style="cursor:pointer;width:auto;color:var(--mut)"><input type="checkbox" id="bpConn" style="width:auto;margin-right:7px">Add alignment pins between pieces <span style="opacity:.6">(experimental — pieces glue cleanly on the flat cut faces without them)</span></label>
             <div class="field"><label>Type</label>
               <select id="bpConnType" style="flex:1">
                 <option value="round">Round pin</option>
@@ -2290,8 +2290,12 @@ function bpWeldPlanar(pos){
   return out;
 }
 // split one triangle list by plane axis=c → {below, above}, each closed (capped)
+// Clip the triangle soup by plane axis=c → {below, above}. NO capping here — the cut
+// faces are left open and sealed later by bpSealPiece, which earcuts each piece's ACTUAL
+// open boundary. That guarantees the cap shares the wall's exact cut edge (watertight),
+// instead of building a cap from segments that can mismatch the wall (the old crack bug).
 function bpSplitOnePlane(tris, ax, c){
-  const eps=1e-4, below=[], above=[], segs=[], ua=(ax+1)%3, va=(ax+2)%3;
+  const eps=1e-4, below=[], above=[];
   for(let i=0;i<tris.length;i+=9){
     const V=[[tris[i],tris[i+1],tris[i+2]],[tris[i+3],tris[i+4],tris[i+5]],[tris[i+6],tris[i+7],tris[i+8]]];
     const d=[V[0][ax]-c,V[1][ax]-c,V[2][ax]-c];
@@ -2299,23 +2303,77 @@ function bpSplitOnePlane(tris, ax, c){
     const mn=Math.min(s[0],s[1],s[2]), mx=Math.max(s[0],s[1],s[2]);
     if(mx<=0){ below.push(V[0][0],V[0][1],V[0][2],V[1][0],V[1][1],V[1][2],V[2][0],V[2][1],V[2][2]); continue; }
     if(mn>=0){ above.push(V[0][0],V[0][1],V[0][2],V[1][0],V[1][1],V[1][2],V[2][0],V[2][1],V[2][2]); continue; }
-    const bp=[],ap=[],cr=[];
+    const bp=[],ap=[];
     for(let e=0;e<3;e++){ const cu=V[e], nx=V[(e+1)%3], sc=s[e], sn=s[(e+1)%3];
       if(sc<=0) bp.push(cu); if(sc>=0) ap.push(cu);
       if((sc<0&&sn>0)||(sc>0&&sn<0)){ const tt=d[e]/(d[e]-d[(e+1)%3]);
         const p=[cu[0]+(nx[0]-cu[0])*tt, cu[1]+(nx[1]-cu[1])*tt, cu[2]+(nx[2]-cu[2])*tt]; p[ax]=c;
-        bp.push(p); ap.push(p); cr.push(p); } }
+        bp.push(p); ap.push(p); } }
     bpFan(below,bp); bpFan(above,ap);
-    if(cr.length>=2) segs.push(cr[0][ua],cr[0][va],cr[1][ua],cr[1][va]);
-  }
-  const caps=bpCapTris(segs, ax, c, ua, va);     // caps face −axis
-  for(let i=0;i<caps.length;i+=9){
-    // above piece sits on +axis side → its cut face (the bottom) faces −axis: use caps as-is.
-    above.push(caps[i],caps[i+1],caps[i+2],caps[i+3],caps[i+4],caps[i+5],caps[i+6],caps[i+7],caps[i+8]);
-    // below piece's cut face (its top) faces +axis: reverse winding.
-    below.push(caps[i],caps[i+1],caps[i+2],caps[i+6],caps[i+7],caps[i+8],caps[i+3],caps[i+4],caps[i+5]);
   }
   return {below,above};
+}
+/* Seal an open clipped piece into a watertight solid. The clip leaves the cut faces open;
+   their boundary edges (used by exactly one triangle) ARE the wall's exact cut edges. Group
+   those boundary edges by the axis-aligned plane they lie on, earcut each planar loop, and
+   add the resulting cap with the outward winding. Because the cap is built from the piece's
+   own boundary vertices, it conforms exactly → no hairline cracks, no open shells. */
+function bpSealPiece(pos){
+  const n=pos.length/3; if(n<3) return pos;
+  const Q=1000, key=i=>Math.round(pos[i*3]*Q)+","+Math.round(pos[i*3+1]*Q)+","+Math.round(pos[i*3+2]*Q);
+  const map=new Map(), rep=[], vid=new Int32Array(n);
+  for(let i=0;i<n;i++){ const k=key(i); let e=map.get(k); if(e===undefined){ e=rep.length/3; map.set(k,e); rep.push(pos[i*3],pos[i*3+1],pos[i*3+2]); } vid[i]=e; }
+  const ec=new Map(), ek=(a,b)=>a<b?a+"_"+b:b+"_"+a;
+  for(let t=0;t<n;t+=3){ const a=vid[t],b=vid[t+1],c=vid[t+2];
+    [[a,b],[b,c],[c,a]].forEach(e=>{ const k=ek(e[0],e[1]); const o=ec.get(k); if(o)o.c++; else ec.set(k,{a:e[0],b:e[1],c:1}); }); }
+  const tol=2.5/Q;
+  let cx=0,cy=0,cz=0; const nvr=rep.length/3; for(let i=0;i<rep.length;i+=3){ cx+=rep[i]; cy+=rep[i+1]; cz+=rep[i+2]; } cx/=nvr;cy/=nvr;cz/=nvr; const cen=[cx,cy,cz];
+  // group boundary edges (used once) by EVERY axis-plane they lie on. A corner edge on the
+  // line where two cut planes meet belongs to both caps, so it's added to both → each cap
+  // includes it once → it ends up shared (used twice) → watertight at the corner.
+  const planes=new Map();
+  ec.forEach(o=>{ if(o.c!==1) return; const A=o.a,B=o.b;
+    for(let a=0;a<3;a++){ if(Math.abs(rep[A*3+a]-rep[B*3+a])<tol){ const co=(rep[A*3+a]+rep[B*3+a])/2;
+      const gk=a+":"+Math.round(co*Q); let g=planes.get(gk); if(!g){ g={ax:a,co,adj:new Map()}; planes.set(gk,g); }
+      const ad=g.adj, pu=(x,y)=>{ let l=ad.get(x); if(!l){ l=[]; ad.set(x,l); } l.push(y); }; pu(A,B); pu(B,A); } }
+  });
+  if(!planes.size) return pos;
+  const out=Array.prototype.slice.call(pos);
+  const area2=(loop,ua,va)=>{ let s=0; for(let i=0;i<loop.length;i++){ const p=loop[i],q=loop[(i+1)%loop.length]; s+=rep[p*3+ua]*rep[q*3+va]-rep[q*3+ua]*rep[p*3+va]; } return s/2; };
+  const ptIn=(loop,ua,va,px,py)=>{ let w=false; for(let i=0,j=loop.length-1;i<loop.length;j=i++){ const ax_=rep[loop[i]*3+ua],ay=rep[loop[i]*3+va],bx_=rep[loop[j]*3+ua],by=rep[loop[j]*3+va];
+    if(((ay>py)!==(by>py)) && (px<(bx_-ax_)*(py-ay)/((by-ay)||1e-9)+ax_)) w=!w; } return w; };
+  planes.forEach(g=>{
+    const ua=(g.ax+1)%3, va=(g.ax+2)%3;
+    // assemble this plane's boundary edges into simple closed loops
+    const ad=g.adj, usedE=new Set(), gloops=[];
+    ad.forEach((_,start)=>{ for(;;){
+      let nb=-1; for(const b of ad.get(start)) if(!usedE.has(ek(start,b))){ nb=b; break; }
+      if(nb<0) break;
+      const loop=[start]; let prev=start,cur=nb,guard=0; usedE.add(ek(prev,cur));
+      while(guard++<300000 && cur!==start){ loop.push(cur);
+        const cs=ad.get(cur)||[]; let pk=-1;
+        for(const b of cs) if(b!==prev && !usedE.has(ek(cur,b))){ pk=b; break; }
+        if(pk<0) for(const b of cs) if(!usedE.has(ek(cur,b))){ pk=b; break; }
+        if(pk<0) break; usedE.add(ek(cur,pk)); prev=cur; cur=pk; }
+      if(loop.length>=3) gloops.push(loop);
+    }});
+    const L=gloops.map(loop=>({loop, a:Math.abs(area2(loop,ua,va)), rep0:[rep[loop[0]*3+ua],rep[loop[0]*3+va]]})).filter(o=>o.a>0.02);
+    L.forEach((o,i)=>{ o.depth=0; L.forEach((q,j)=>{ if(i!==j && q.a>o.a && ptIn(q.loop,ua,va,o.rep0[0],o.rep0[1])) o.depth++; }); });
+    const faceUp = cen[g.ax] < g.co;
+    L.forEach((o,i)=>{ if(o.depth%2!==0) return;        // odd nesting = hole
+      const holes=[]; L.forEach((q,j)=>{ if(j!==i && q.depth===o.depth+1 && ptIn(o.loop,ua,va,q.rep0[0],q.rep0[1])) holes.push(q.loop); });
+      const contour=o.loop.map(v=>new THREE.Vector2(rep[v*3+ua],rep[v*3+va]));
+      const holeV=holes.map(h=>h.map(v=>new THREE.Vector2(rep[v*3+ua],rep[v*3+va])));
+      let faces; try{ faces=THREE.ShapeUtils.triangulateShape(contour, holeV); }catch(e){ faces=null; }
+      if(!faces||!faces.length) return;
+      const idxArr=[...o.loop, ...holes.flatMap(h=>h)];   // global rep indices, matching triangulateShape's order
+      faces.forEach(f=>{ const g0=idxArr[f[0]],g1=idxArr[f[1]],g2=idxArr[f[2]];
+        let P0=[rep[g0*3],rep[g0*3+1],rep[g0*3+2]], P1=[rep[g1*3],rep[g1*3+1],rep[g1*3+2]], P2=[rep[g2*3],rep[g2*3+1],rep[g2*3+2]];
+        const nrm=bpCross3(bpSub3(P1,P0),bpSub3(P2,P0)); const want=faceUp?1:-1; if((nrm[g.ax]>0?1:-1)!==want){ const t=P1;P1=P2;P2=t; }
+        out.push(P0[0],P0[1],P0[2],P1[0],P1[1],P1[2],P2[0],P2[1],P2[2]); });
+    });
+  });
+  return out;
 }
 function bpSplitAxis(tris, ax, cuts){
   if(!cuts.length) return [tris];
@@ -3621,7 +3679,8 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
              for(let q=0;q<cell.length;q+=3){ const X=cell[q],Y=cell[q+1],Z=cell[q+2];
                if(X<xmn)xmn=X; if(Y<ymn)ymn=Y; if(Z<zmn)zmn=Z; if(X>xmx)xmx=X; if(Y>ymx)ymx=Y; if(Z>zmx)zmx=Z; }
              if(Math.max(xmx-xmn,ymx-ymn,zmx-zmn)<2) return;
-             const np=addPart("mesh",{params:{positions:cell.map(r3)}, color:PALETTE[made.length%PALETTE.length],
+             let sealed; try{ sealed=bpSealPiece(cell); }catch(e){ sealed=cell; }   // close the open cut faces → watertight solid
+             const np=addPart("mesh",{params:{positions:sealed.map(r3)}, color:PALETTE[made.length%PALETTE.length],
                name:"Tile "+(job.ix+1)+"·"+(iz+1)+"·"+(iy+1), position:[0,0,0]});
              np.bpGrid={ix:job.ix,iy:iy,iz:iz};
              np.bpCell={x0:bx[job.ix],x1:bx[job.ix+1],y0:by[iy],y1:by[iy+1],z0:bz[iz],z1:bz[iz+1]};
@@ -3633,13 +3692,21 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
          const connOn = !$("bpConn") || $("bpConn").checked;     // master "Add alignment pins" toggle
          const finish=(withConn)=>{
            removePart(part);                 // keep the source mesh alive through the connector pass (its solidity test raycasts against it)
-           const plates=arrangeOntoPlates(made);
-           renderBpResult(plates);
-           if(made[0]) select(made[0]);
-           frameAll(); pushUndo(); updateStats();
-           toast("Split into "+made.length+" pieces on "+plates.length+" plate"+(plates.length>1?"s":"")+(withConn?" + connectors":""),"ok");
-           btn.disabled=false;
-           if(connOn && bpConnPattern===0) setTimeout(bpStartEdit,300);   // Manual placement chosen → drop into the editor
+           const arrange=()=>{
+             const plates=arrangeOntoPlates(made);
+             renderBpResult(plates);
+             if(made[0]) select(made[0]);
+             frameAll(); pushUndo(); updateStats();
+             toast("Split into "+made.length+" pieces on "+plates.length+" plate"+(plates.length>1?"s":"")+(withConn?" + connectors":""),"ok");
+             btn.disabled=false;
+             if(connOn && bpConnPattern===0) setTimeout(bpStartEdit,300);   // Manual placement chosen → drop into the editor
+           };
+           if(withConn){   // connectors' local booleans leave splice cracks on the (axis-aligned) box faces → re-seal
+             chunk(made, p=>{ try{ const sealed=bpSealPiece(Array.prototype.slice.call(p.mesh.geometry.attributes.position.array));
+                 const ng=new THREE.BufferGeometry(); ng.setAttribute("position", new THREE.Float32BufferAttribute(sealed,3)); ng.computeVertexNormals();
+                 p.mesh.geometry.dispose(); p.mesh.geometry=ng; }catch(e){} },
+               (i,n)=>toast("Sealing connectors — "+Math.round(i/Math.max(1,n)*100)+"%"), arrange);
+           } else arrange();
          };
          if(connOn && bpConnPattern>0) bpApplyAutoConnectors(made, ()=>finish(true));   // Auto 1/2/4 per seam → bake pins now
          else finish(false);
