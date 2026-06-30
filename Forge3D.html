@@ -607,6 +607,7 @@
           </div>
           <div class="grp">
             <h4>Result</h4>
+            <label class="field" style="cursor:pointer;width:auto;color:var(--mut)"><input type="checkbox" id="bpSmart" checked style="width:auto;margin-right:7px">Smart cut — slice at narrow joints (cleaner faces &amp; connectors)</label>
             <div class="note" id="bpSummary" style="font-size:12px;line-height:1.7">Import or select a model to begin.</div>
             <button class="tbtn primary full" id="bpGenerate" style="margin-top:8px">Split into printable pieces</button>
             <div class="note">Each piece is placed on its own printer-bed plate. Print the plates, then join with the connectors.</div>
@@ -2130,8 +2131,9 @@ function bpFan(out, poly){ for(let i=1;i+1<poly.length;i++){ const p0=poly[0],pi
 // facing −axis, or [] if the outline is too broken to assemble into clean loops.
 function bpEarcutOutline(segs, ax, c, ua, va){
   const ns=segs.length/4; if(ns<3) return [];
-  const W=0.05;                                            // endpoint weld tolerance (mm)
-  const idOf=new Map(), pts=[];
+  const W=0.0001;                                          // sub-micron weld: only merges the bit-identical shared cut
+  const idOf=new Map(), pts=[];                            // points (the mesh is pre-welded), so the cap's boundary keeps
+                                                           // EVERY wall cut vertex → conforms exactly, no T-junction cracks
   const vid=(x,y)=>{ const k=Math.round(x/W)+"_"+Math.round(y/W); let e=idOf.get(k);
     if(e===undefined){ e=pts.length; pts.push([x,y]); idOf.set(k,e); } return e; };
   const star=new Map(), seenHE=new Set();
@@ -2185,43 +2187,28 @@ function bpEarcutOutline(segs, ax, c, ua, va){
 // region's clean cell-boundary loops through bpEarcutOutline. The grid REGULARISES the
 // mess into shared-vertex loops that always assemble, so the cap comes out flat with a
 // minimal triangulation (no internal striping) — only the silhouette is quantised to
-// the ~0.4mm grid. Raw grid quads are a last resort if even that won't earcut.
+// CONFORMING fan fallback for cross-sections too messy to earcut cleanly. Fans every
+// EXACT cut segment to the cross-section centroid, so the cap's boundary edges ARE the
+// wall's cut segments — the piece stays watertight (no hairline cracks / see-through
+// lines), and the whole cap sits flat on the plane. Interior triangles may overlap on
+// concave outlines, but they're coplanar so it just reads as a filled flat face.
 function bpScanlineCap(segs, ax, c, ua, va){
   const ns=segs.length/4; if(ns<3) return [];
-  let umin=Infinity,umax=-Infinity,vmin=Infinity,vmax=-Infinity;
-  for(let i=0;i<segs.length;i+=4){ const u1=segs[i],v1=segs[i+1],u2=segs[i+2],v2=segs[i+3];
-    if(u1<umin)umin=u1; if(u2<umin)umin=u2; if(u1>umax)umax=u1; if(u2>umax)umax=u2;
-    if(v1<vmin)vmin=v1; if(v2<vmin)vmin=v2; if(v1>vmax)vmax=v1; if(v2>vmax)vmax=v2; }
-  const spanU=umax-umin, spanV=vmax-vmin; if(spanU<=0||spanV<=0) return [];
-  const step=Math.min(Math.max(Math.max(spanU,spanV)/260, 0.35), Math.min(spanU,spanV)/2);
-  const nx=Math.max(1,Math.round(spanU/step)), ny=Math.max(1,Math.round(spanV/step));
-  const fill=new Uint8Array(nx*ny), xs=[];
-  for(let j=0;j<ny;j++){ const y=vmin+(j+0.5)*step; xs.length=0;
-    for(let i=0;i<segs.length;i+=4){ const u1=segs[i],v1=segs[i+1],u2=segs[i+2],v2=segs[i+3];
-      if((v1<=y&&v2>y)||(v2<=y&&v1>y)){ xs.push(u1+(u2-u1)*((y-v1)/(v2-v1))); } }
-    xs.sort((a,b)=>a-b);
-    for(let k=0;k+1<xs.length;k+=2){ let ia=Math.round((xs[k]-umin)/step), ib=Math.round((xs[k+1]-umin)/step);
-      if(ia<0)ia=0; if(ib>nx)ib=nx; for(let i=ia;i<ib;i++) fill[j*nx+i]=1; } }
-  const F=(i,j)=> (i<0||j<0||i>=nx||j>=ny)?0:fill[j*nx+i];
-  const gx=i=>umin+i*step, gy=j=>vmin+j*step;
-  const bseg=[];                                          // clean cell-boundary segments
-  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){ if(!fill[j*nx+i]) continue;
-    if(!F(i-1,j)) bseg.push(gx(i),gy(j), gx(i),gy(j+1));
-    if(!F(i+1,j)) bseg.push(gx(i+1),gy(j), gx(i+1),gy(j+1));
-    if(!F(i,j-1)) bseg.push(gx(i),gy(j), gx(i+1),gy(j));
-    if(!F(i,j+1)) bseg.push(gx(i),gy(j+1), gx(i+1),gy(j+1)); }
-  const clean = bseg.length? bpEarcutOutline(bseg, ax, c, ua, va) : [];
-  if(clean.length) return clean;
-  // last resort: raw filled cells (rare; only if the grid boundary still won't assemble)
-  const out=[]; const mk=(u,v)=>{ const p=[0,0,0]; p[ua]=u; p[va]=v; p[ax]=c; return p; };
-  const quad=(i,j)=>{ const A=mk(gx(i),gy(j)),B=mk(gx(i+1),gy(j)),C=mk(gx(i+1),gy(j+1)),D=mk(gx(i),gy(j+1));
-    const tri=(P0,P1,P2)=>{ const n=bpCross3(bpSub3(P1,P0),bpSub3(P2,P0)); if(n[ax]>0){ const t=P1;P1=P2;P2=t; }
-      out.push(P0[0],P0[1],P0[2],P1[0],P1[1],P1[2],P2[0],P2[1],P2[2]); }; tri(A,B,C); tri(A,C,D); };
-  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++) if(fill[j*nx+i]) quad(i,j);
+  let su=0,sv=0,cnt=0;
+  for(let i=0;i<segs.length;i+=4){ su+=segs[i]+segs[i+2]; sv+=segs[i+1]+segs[i+3]; cnt+=2; }
+  const cu=su/cnt, cv=sv/cnt;
+  const mk=(u,v)=>{ const p=[0,0,0]; p[ua]=u; p[va]=v; p[ax]=c; return p; };
+  const C=mk(cu,cv), out=[];
+  for(let i=0;i<segs.length;i+=4){
+    let P1=mk(segs[i],segs[i+1]), P2=mk(segs[i+2],segs[i+3]);
+    if(Math.abs(P1[ua]-P2[ua])<1e-7 && Math.abs(P1[va]-P2[va])<1e-7) continue;   // degenerate segment
+    const nrm=bpCross3(bpSub3(P1,C),bpSub3(P2,C)); if(nrm[ax]>0){ const t=P1;P1=P2;P2=t; }   // face −axis
+    out.push(C[0],C[1],C[2], P1[0],P1[1],P1[2], P2[0],P2[1],P2[2]);
+  }
   return out;
 }
-// Cap the cut at plane (axis=c): try the exact outline triangulation, else the
-// grid-regularised fallback. Both yield flat, minimally-triangulated faces.
+// Cap the cut at plane (axis=c): exact outline triangulation when the outline assembles
+// cleanly, else the conforming fan. Both share the wall's cut edge → watertight pieces.
 function bpCapTris(segs, ax, c, ua, va){
   const r=bpEarcutOutline(segs, ax, c, ua, va);
   return r.length? r : bpScanlineCap(segs, ax, c, ua, va);
@@ -3421,6 +3408,40 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
   if($("bpPrinter")){ populatePrinterSelect($("bpPrinter")); syncPrinterValue($("printerSel")?$("printerSel").value:"custom"); }
 
   function axisBoundaries(lo,hi,n){ const a=[]; for(let i=0;i<=n;i++) a.push(lo+(hi-lo)*i/n); return a; }
+  /* SMART boundaries: place cuts at the model's "waists" — cross-section minima along an
+     axis — instead of a uniform grid, so each cut passes through the narrowest, simplest
+     cross-section (clean cap, solid central connector). Still guarantees every gap ≤ maxSpan
+     so the pieces fit the bed. Falls back to uniform if the span already fits or is featureless. */
+  function bpSmartBoundaries(positions, axis, lo, hi, maxSpan){
+    const span=hi-lo; if(span<=maxSpan || positions.length<27) return axisBoundaries(lo,hi,Math.max(1,Math.ceil(span/maxSpan)));
+    const ua=(axis+1)%3, va=(axis+2)%3;
+    const S=Math.max(24, Math.min(600, Math.round(span/1.5)));   // ~1.5mm sampling bands
+    const cw=span/S;
+    const umn=new Float32Array(S).fill(1e30), umx=new Float32Array(S).fill(-1e30),
+          vmn=new Float32Array(S).fill(1e30), vmx=new Float32Array(S).fill(-1e30),
+          hit=new Uint8Array(S);
+    for(let i=0;i<positions.length;i+=9){
+      const a0=positions[i+axis], a1=positions[i+3+axis], a2=positions[i+6+axis];
+      let b0=Math.floor((Math.min(a0,a1,a2)-lo)/cw), b1=Math.ceil((Math.max(a0,a1,a2)-lo)/cw);
+      if(b0<0)b0=0; if(b1>S)b1=S; if(b1<=b0)b1=b0+1;
+      const u0=positions[i+ua],u1=positions[i+3+ua],u2=positions[i+6+ua];
+      const v0=positions[i+va],v1=positions[i+3+va],v2=positions[i+6+va];
+      const lu=Math.min(u0,u1,u2), hu=Math.max(u0,u1,u2), lv=Math.min(v0,v1,v2), hv=Math.max(v0,v1,v2);
+      for(let b=b0;b<b1 && b<S;b++){ hit[b]=1;
+        if(lu<umn[b])umn[b]=lu; if(hu>umx[b])umx[b]=hu; if(lv<vmn[b])vmn[b]=lv; if(hv>vmx[b])vmx[b]=hv; }
+    }
+    const prof=new Float32Array(S);   // cross-section bbox area proxy per band (small = narrow waist)
+    for(let b=0;b<S;b++) prof[b]= hit[b]? (umx[b]-umn[b])*(vmx[b]-vmn[b]) : 1e30;
+    // greedy: from lo, jump to the narrowest band within [pos+minGap, pos+maxSpan]
+    const minGap=Math.max(maxSpan*0.35, 8), cuts=[]; let pos=lo, guard=0;
+    while(hi-pos>maxSpan && guard++<10000){
+      const wLo=pos+minGap, wHi=pos+maxSpan; let bestB=-1,bestV=1e31;
+      for(let b=0;b<S;b++){ const bc=lo+(b+0.5)*cw; if(bc<wLo||bc>wHi)continue; if(prof[b]<bestV){bestV=prof[b]; bestB=b;} }
+      const cut = bestB>=0 ? lo+(bestB+0.5)*cw : wHi;
+      cuts.push(cut); pos=cut;
+    }
+    return [lo, ...cuts, hi];
+  }
   function grid(){
     const part=selected; if(!part) return null;
     part.mesh.updateMatrixWorld(true);
@@ -3566,7 +3587,8 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     if(g.scale!==1){ m.scale.multiplyScalar(g.scale); m.updateMatrixWorld(true); dropToPlate(part); m.updateMatrixWorld(true); }
     bpModelMesh=m;
     const box=new THREE.Box3().setFromObject(m);
-    const bx=axisBoundaries(box.min.x,box.max.x,g.nx), by=axisBoundaries(box.min.y,box.max.y,g.ny), bz=axisBoundaries(box.min.z,box.max.z,g.nz);
+    let bx=axisBoundaries(box.min.x,box.max.x,g.nx), by=axisBoundaries(box.min.y,box.max.y,g.ny), bz=axisBoundaries(box.min.z,box.max.z,g.nz);
+    const smart = !$("bpSmart") || $("bpSmart").checked;
     bpConnSizeMM=parseFloat($("bpConnSize").value)||8;
     bpConnPattern=parseInt($("bpConnPattern").value);
     const btn=$("bpGenerate"); btn.disabled=true;
@@ -3580,6 +3602,10 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
       try{ const rep=repairGeometry(m.geometry);
         const r2=new THREE.Mesh(rep.geo); r2.position.copy(m.position); r2.quaternion.copy(m.quaternion); r2.scale.copy(m.scale); r2.updateMatrixWorld(true); bm=r2; }catch(e){}
       const positions=bpWorldPositions(bm);
+      if(smart){ const mg=4;   // re-place the cuts at cross-section waists, bed-limited
+        bx=bpSmartBoundaries(positions,0,box.min.x,box.max.x,Math.max(20,BV.x-mg));
+        by=bpSmartBoundaries(positions,1,box.min.y,box.max.y,Math.max(20,BV.z-mg));
+        bz=bpSmartBoundaries(positions,2,box.min.z,box.max.z,Math.max(20,BV.y-mg)); }
       const yCuts=by.slice(1,-1), zCuts=bz.slice(1,-1);
       toast("Cutting pieces — 0%");
       setTimeout(()=>{
