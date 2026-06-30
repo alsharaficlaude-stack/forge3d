@@ -558,6 +558,12 @@
             <h4>1 · Model</h4>
             <button class="tbtn primary full" id="bpImport">Import STL…</button>
             <div class="note">Imports a model to tile. Otherwise works on the part selected in the scene.</div>
+            <div class="field" style="margin-top:8px"><label>Detail</label>
+              <input type="range" id="bpDetail" min="20" max="280" value="90" step="10" style="flex:1">
+              <button class="tbtn" id="bpReduce" style="padding:6px 12px">Reduce</button>
+            </div>
+            <button class="tbtn full" id="bpRepair" style="margin-top:4px;padding:6px 12px">🩹 Repair mesh (weld + fill holes)</button>
+            <div class="note" id="bpTriNote" style="font-size:11px"></div>
           </div>
           <div class="grp">
             <h4>2 · Printer / plate</h4>
@@ -574,7 +580,7 @@
           </div>
           <div class="grp">
             <h4>4 · Connectors</h4>
-            <label class="field" style="cursor:pointer;width:auto;color:var(--mut)"><input type="checkbox" id="bpConn" checked style="width:auto;margin-right:7px">Add alignment pins at every seam</label>
+            <label class="field" style="cursor:pointer;width:auto;color:var(--mut)"><input type="checkbox" id="bpConn" checked style="width:auto;margin-right:7px">Add alignment pins between pieces</label>
             <div class="field"><label>Type</label>
               <select id="bpConnType" style="flex:1">
                 <option value="round">Round pin</option>
@@ -585,12 +591,26 @@
                 <option value="dovetail">Dovetail key</option>
               </select>
             </div>
+            <div class="field"><label>Size <span class="uLbl">mm</span></label>
+              <input type="range" id="bpConnSize" min="3" max="30" value="8" step="1" style="flex:1">
+              <span class="note mono" id="bpConnSizeVal" style="margin:0;min-width:38px;text-align:right">8 mm</span>
+            </div>
+            <div class="field"><label>Placement</label>
+              <select id="bpConnPattern" style="flex:1">
+                <option value="1">Auto · 1 centered per seam</option>
+                <option value="2">Auto · 2 per seam</option>
+                <option value="4">Auto · 4 corners per seam</option>
+                <option value="0">Manual · I'll place them</option>
+              </select>
+            </div>
+            <div class="note" id="bpConnHint" style="font-size:11px"></div>
           </div>
           <div class="grp">
             <h4>Result</h4>
             <div class="note" id="bpSummary" style="font-size:12px;line-height:1.7">Import or select a model to begin.</div>
             <button class="tbtn primary full" id="bpGenerate" style="margin-top:8px">Split into printable pieces</button>
-            <div class="note">Pieces are laid out on the bed — print each, then join with the connectors. Very large models make many pieces and can be slow.</div>
+            <div class="note">Each piece is placed on its own printer-bed plate. Print the plates, then join with the connectors.</div>
+            <div id="bpResult" style="margin-top:10px"></div>
           </div>
         </div>
       </div>
@@ -1471,7 +1491,12 @@ function autoArrange(){
   if(!parts.length){ toast("Nothing to arrange","err"); return; }
   const items=parts.map(p=>{ p.mesh.updateMatrixWorld(true); const b=new THREE.Box3().setFromObject(p.mesh), s=new THREE.Vector3(); b.getSize(s); return {p,w:s.x,d:s.z}; });
   items.sort((x,y)=>(y.w*y.d)-(x.w*x.d));
-  const gap=6, maxW=Math.max(40,BV.x); let x=0,z=0,rowD=0; const placed=[];
+  const gap=6;
+  // row width ~ square-root of total footprint, so the layout stays roughly square
+  // (pieces too big to fit 2 per bed-row would otherwise string out into one long line)
+  const totalArea=items.reduce((s,it)=>s+(it.w+gap)*(it.d+gap),0);
+  const maxW=Math.max(BV.x, Math.sqrt(totalArea)*1.05);
+  let x=0,z=0,rowD=0; const placed=[];
   items.forEach(it=>{ if(x>0 && x+it.w>maxW){ x=0; z+=rowD+gap; rowD=0; }
     placed.push({it,cx:x+it.w/2,cz:z+it.d/2}); x+=it.w+gap; rowD=Math.max(rowD,it.d); });
   let exX=0; placed.forEach(q=>exX=Math.max(exX,q.cx+q.it.w/2)); const exZ=z+rowD;
@@ -1807,6 +1832,44 @@ function slugName(){
   return (currentPrinter&&currentPrinter!=="Custom"?currentPrinter:"model")
     .toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") || "model";
 }
+/* triangles for an arbitrary subset of parts (Y-up -> Z-up). center=true also
+   centres them in X/Y so a single plate prints in the middle of the slicer bed. */
+function collectTrianglesFrom(list, center){
+  const tris=[], v=new THREE.Vector3();
+  let minZ=Infinity,minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  list.forEach(p=>{ const m=p.mesh; m.updateMatrixWorld(true);
+    const g=m.geometry.index?m.geometry.toNonIndexed():m.geometry.clone(), pos=g.attributes.position;
+    for(let i=0;i<pos.count;i++){ v.set(pos.getX(i),pos.getY(i),pos.getZ(i)).applyMatrix4(m.matrixWorld);
+      const x=v.x,y=-v.z,z=v.y; tris.push(x,y,z);
+      if(z<minZ)minZ=z; if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y; }
+    if(g!==m.geometry) g.dispose&&g.dispose(); });
+  if(!tris.length) return tris;
+  const cx=center?(minX+maxX)/2:0, cy=center?(minY+maxY)/2:0;
+  for(let i=0;i<tris.length;i+=3){ tris[i]-=cx; tris[i+1]-=cy; tris[i+2]-=minZ; }
+  return tris;
+}
+function buildSTLBlob(flat, note){
+  const triCount=flat.length/9, buf=new ArrayBuffer(84+triCount*50), dv=new DataView(buf);
+  const header=(note||"Forge3D STL mm").slice(0,79);
+  for(let i=0;i<80;i++) dv.setUint8(i, i<header.length?header.charCodeAt(i):0);
+  dv.setUint32(80,triCount,true); let off=84;
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),ab=new THREE.Vector3(),ac=new THREE.Vector3(),n=new THREE.Vector3();
+  for(let t=0;t<triCount;t++){ const o=t*9;
+    a.set(flat[o],flat[o+1],flat[o+2]); b.set(flat[o+3],flat[o+4],flat[o+5]); c.set(flat[o+6],flat[o+7],flat[o+8]);
+    ab.subVectors(b,a); ac.subVectors(c,a); n.crossVectors(ab,ac).normalize();
+    dv.setFloat32(off,n.x,true);dv.setFloat32(off+4,n.y,true);dv.setFloat32(off+8,n.z,true);off+=12;
+    dv.setFloat32(off,a.x,true);dv.setFloat32(off+4,a.y,true);dv.setFloat32(off+8,a.z,true);off+=12;
+    dv.setFloat32(off,b.x,true);dv.setFloat32(off+4,b.y,true);dv.setFloat32(off+8,b.z,true);off+=12;
+    dv.setFloat32(off,c.x,true);dv.setFloat32(off+4,c.y,true);dv.setFloat32(off+8,c.z,true);off+=12;
+    dv.setUint16(off,0,true);off+=2; }
+  return new Blob([buf],{type:"application/octet-stream"});
+}
+function exportPartsSTL(list, filename, note){
+  const flat=collectTrianglesFrom(list,true);
+  if(!flat.length){ toast("Nothing to export","err"); return 0; }
+  downloadBlob(buildSTLBlob(flat,note||filename), filename);
+  return flat.length/9;
+}
 
 /* ---------- OBJ + 3MF export ---------- */
 /* world triangles per part, mapped Y-up -> Z-up and dropped so the lowest point is z=0
@@ -1975,6 +2038,158 @@ function importSTLBuffer(buffer, fileName){
   const sz=new THREE.Vector3(); part.mesh.geometry.computeBoundingBox(); part.mesh.geometry.boundingBox.getSize(sz);
   toast(`Imported ${name} · ${tri.toLocaleString()} tris · ${sz.x.toFixed(0)}×${sz.z.toFixed(0)}×${sz.y.toFixed(0)} mm`,"ok");
   return part;
+}
+/* ---------- mesh reduction (vertex clustering) — fast linear decimation so
+   dense imports (scans/sculpts, ~1M tris) can be split in-browser ---------- */
+function triCountGeom(g){ const p=g&&g.attributes&&g.attributes.position; return p?(g.index?g.index.count:p.count)/3:0; }
+function vertexClusterPositions(geometry, gridN){
+  const g=geometry.index?geometry.toNonIndexed():geometry, pos=g.attributes.position, n=pos.count;
+  g.computeBoundingBox(); const bb=g.boundingBox, size=new THREE.Vector3(); bb.getSize(size);
+  const maxd=Math.max(size.x,size.y,size.z)||1, inv=gridN/maxd;
+  const map=new Map(), reps=[], vcell=new Int32Array(n);
+  for(let i=0;i<n;i++){ const x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+    const key=Math.floor((x-bb.min.x)*inv)+"_"+Math.floor((y-bb.min.y)*inv)+"_"+Math.floor((z-bb.min.z)*inv);
+    let e=map.get(key); if(e===undefined){ e=reps.length; map.set(key,e); reps.push({sx:0,sy:0,sz:0,c:0}); }
+    const r=reps[e]; r.sx+=x; r.sy+=y; r.sz+=z; r.c++; vcell[i]=e; }
+  const rx=new Float32Array(reps.length),ry=new Float32Array(reps.length),rz=new Float32Array(reps.length);
+  for(let i=0;i<reps.length;i++){ const r=reps[i]; rx[i]=r.sx/r.c; ry[i]=r.sy/r.c; rz[i]=r.sz/r.c; }
+  const out=[];
+  for(let t=0;t<n;t+=3){ const a=vcell[t],b=vcell[t+1],c=vcell[t+2]; if(a===b||b===c||a===c) continue;
+    out.push(rx[a],ry[a],rz[a], rx[b],ry[b],rz[b], rx[c],ry[c],rz[c]); }
+  if(g!==geometry && g.dispose) g.dispose();
+  return out;
+}
+/* ---------- mesh repair: weld coincident verts, drop degenerate tris, and
+   fill small holes so the boolean cutter gets a watertight solid ---------- */
+function repairGeometry(geometry, weldTol){
+  const src=geometry.index?geometry.toNonIndexed():geometry, pos=src.attributes.position, n=pos.count;
+  const Q=1/(weldTol||0.03);
+  const map=new Map(), vx=[], vid=new Int32Array(n);
+  for(let i=0;i<n;i++){ const x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+    const k=Math.round(x*Q)+","+Math.round(y*Q)+","+Math.round(z*Q);
+    let e=map.get(k); if(e===undefined){ e=vx.length/3; map.set(k,e); vx.push(x,y,z); } vid[i]=e; }
+  const tris=[];
+  for(let t=0;t<n;t+=3){ const a=vid[t],b=vid[t+1],c=vid[t+2]; if(a!==b&&b!==c&&a!==c) tris.push(a,b,c); }
+  // count edge usage (welded) to find boundary edges (used exactly once)
+  const ec=new Map(), ek=(a,b)=>a<b?a+"_"+b:b+"_"+a;
+  for(let i=0;i<tris.length;i+=3){ const a=tris[i],b=tris[i+1],c=tris[i+2];
+    ec.set(ek(a,b),(ec.get(ek(a,b))||0)+1); ec.set(ek(b,c),(ec.get(ek(b,c))||0)+1); ec.set(ek(c,a),(ec.get(ek(c,a))||0)+1); }
+  // directed boundary edges → assemble into loops → fan-fill (small holes)
+  const succ=new Map(); let bcount=0;
+  for(let i=0;i<tris.length;i+=3){ const a=tris[i],b=tris[i+1],c=tris[i+2];
+    [[a,b],[b,c],[c,a]].forEach(([u,v])=>{ if(ec.get(ek(u,v))===1){ if(!succ.has(u))succ.set(u,[]); succ.get(u).push(v); bcount++; } }); }
+  let filled=0;
+  succ.forEach((_,start)=>{ const first=succ.get(start); if(!first||!first.length) return;
+    let cur=start, loop=[start], guard=0;
+    while(guard++<20000){ const outs=succ.get(cur); if(!outs||!outs.length) break; const nx=outs.shift();
+      if(nx===start){ loop.length>=3 && loop.forEach((_,i)=>{ if(i>0&&i+1<loop.length) tris.push(loop[0],loop[i+1],loop[i]); }); filled++; break; }
+      loop.push(nx); cur=nx; }
+  });
+  const out=new Float32Array(tris.length*3);
+  for(let i=0;i<tris.length;i++){ const v=tris[i]; out[i*3]=vx[v*3]; out[i*3+1]=vx[v*3+1]; out[i*3+2]=vx[v*3+2]; }
+  const ng=new THREE.BufferGeometry(); ng.setAttribute("position", new THREE.BufferAttribute(out,3)); ng.computeVertexNormals();
+  return { geo:ng, welded:vx.length/3, boundaryEdges:bcount, holesFilled:filled };
+}
+function repairPart(part){
+  if(!part || part.type!=="mesh"){ toast("Select an imported mesh to repair","err"); return; }
+  const r=repairGeometry(part.mesh.geometry);
+  part.params.positions=Array.from(r.geo.attributes.position.array).map(r3);
+  part.mesh.geometry.dispose(); part.mesh.geometry=REGISTRY.mesh.build(part.params); part.mesh.geometry.computeVertexNormals();
+  pushUndo(); updateStats(); wake(800);
+  toast(r.boundaryEdges? ("Repaired — filled "+r.holesFilled+" hole"+(r.holesFilled!==1?"s":"")+" ("+r.boundaryEdges+" open edges)") : "Mesh already watertight","ok");
+}
+function reduceMesh(part, gridN){
+  if(!part || part.type!=="mesh"){ toast("Select an imported mesh to reduce","err"); return 0; }
+  const before=triCountGeom(part.mesh.geometry);
+  const out=vertexClusterPositions(part.mesh.geometry, gridN);
+  if(out.length<9){ toast("Detail too low — raise the slider","err"); return 0; }
+  part.params.positions=out.map(r3);
+  part.mesh.geometry.dispose();
+  part.mesh.geometry=REGISTRY.mesh.build(part.params);
+  part.mesh.geometry.computeVertexNormals();
+  const after=out.length/9;
+  pushUndo(); updateStats(); wake(800);
+  toast("Reduced "+Math.round(before).toLocaleString()+" → "+after.toLocaleString()+" triangles","ok");
+  return after;
+}
+/* ============================================================================
+   PLANE-CLIPPING GRID SPLITTER — memory-safe, full-resolution solid splitting
+   that the BSP boolean engine can't do. Clips triangles to each grid cell and
+   caps the cut faces (cross-section loops → triangulated) so every piece stays
+   a closed solid. Linear in triangle count → handles million-triangle meshes
+   without the boolean engine's memory blow-up.
+   ========================================================================== */
+function bpSub3(a,b){return [a[0]-b[0],a[1]-b[1],a[2]-b[2]];}
+function bpCross3(a,b){return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];}
+function bpFan(out, poly){ for(let i=1;i+1<poly.length;i++){ const p0=poly[0],pi=poly[i],pj=poly[i+1];
+  out.push(p0[0],p0[1],p0[2], pi[0],pi[1],pi[2], pj[0],pj[1],pj[2]); } }
+// cap the cut at plane (axis=c) by SCANLINE EVEN-ODD fill of the cross-section the
+// cut segments bound. Robust on complex/organic/self-touching outlines (no loop
+// assembly to fail). Cap faces −axis. uv = the two non-axis coords.
+function bpCapTris(segs, ax, c, ua, va){
+  const ns=segs.length/4; if(ns<3) return [];
+  let vmin=Infinity,vmax=-Infinity;
+  for(let i=0;i<segs.length;i+=4){ const v1=segs[i+1],v2=segs[i+3]; if(v1<vmin)vmin=v1; if(v2<vmin)vmin=v2; if(v1>vmax)vmax=v1; if(v2>vmax)vmax=v2; }
+  const span=vmax-vmin; if(span<=0) return [];
+  const step=Math.min(Math.max(span/600, 0.4), span/3);   // scanline spacing: fine but bounded
+  const out=[];
+  const mk=(u,v)=>{ const p=[0,0,0]; p[ua]=u; p[va]=v; p[ax]=c; return p; };
+  const quad=(x0,x1,y0,y1)=>{ const A=mk(x0,y0),B=mk(x1,y0),C=mk(x1,y1),D=mk(x0,y1);
+    const tri=(P0,P1,P2)=>{ const n=bpCross3(bpSub3(P1,P0),bpSub3(P2,P0)); if(n[ax]>0){ const t=P1;P1=P2;P2=t; }
+      out.push(P0[0],P0[1],P0[2],P1[0],P1[1],P1[2],P2[0],P2[1],P2[2]); };
+    tri(A,B,C); tri(A,C,D); };
+  const xs=[];
+  for(let y=vmin+step*0.5; y<vmax; y+=step){
+    xs.length=0;
+    for(let i=0;i<segs.length;i+=4){ const u1=segs[i],v1=segs[i+1],u2=segs[i+2],v2=segs[i+3];
+      if((v1<=y&&v2>y)||(v2<=y&&v1>y)){ xs.push(u1+(u2-u1)*((y-v1)/(v2-v1))); } }
+    if(xs.length<2) continue;
+    xs.sort((a,b)=>a-b);
+    const y0=y-step*0.5, y1=y+step*0.5;
+    for(let k=0;k+1<xs.length;k+=2){ if(xs[k+1]-xs[k]>1e-4) quad(xs[k],xs[k+1],y0,y1); }   // even-odd: fill between crossing pairs
+  }
+  return out;
+}
+// split one triangle list by plane axis=c → {below, above}, each closed (capped)
+function bpSplitOnePlane(tris, ax, c){
+  const eps=1e-4, below=[], above=[], segs=[], ua=(ax+1)%3, va=(ax+2)%3;
+  for(let i=0;i<tris.length;i+=9){
+    const V=[[tris[i],tris[i+1],tris[i+2]],[tris[i+3],tris[i+4],tris[i+5]],[tris[i+6],tris[i+7],tris[i+8]]];
+    const d=[V[0][ax]-c,V[1][ax]-c,V[2][ax]-c];
+    const s=[d[0]<-eps?-1:d[0]>eps?1:0, d[1]<-eps?-1:d[1]>eps?1:0, d[2]<-eps?-1:d[2]>eps?1:0];
+    const mn=Math.min(s[0],s[1],s[2]), mx=Math.max(s[0],s[1],s[2]);
+    if(mx<=0){ below.push(V[0][0],V[0][1],V[0][2],V[1][0],V[1][1],V[1][2],V[2][0],V[2][1],V[2][2]); continue; }
+    if(mn>=0){ above.push(V[0][0],V[0][1],V[0][2],V[1][0],V[1][1],V[1][2],V[2][0],V[2][1],V[2][2]); continue; }
+    const bp=[],ap=[],cr=[];
+    for(let e=0;e<3;e++){ const cu=V[e], nx=V[(e+1)%3], sc=s[e], sn=s[(e+1)%3];
+      if(sc<=0) bp.push(cu); if(sc>=0) ap.push(cu);
+      if((sc<0&&sn>0)||(sc>0&&sn<0)){ const tt=d[e]/(d[e]-d[(e+1)%3]);
+        const p=[cu[0]+(nx[0]-cu[0])*tt, cu[1]+(nx[1]-cu[1])*tt, cu[2]+(nx[2]-cu[2])*tt]; p[ax]=c;
+        bp.push(p); ap.push(p); cr.push(p); } }
+    bpFan(below,bp); bpFan(above,ap);
+    if(cr.length>=2) segs.push(cr[0][ua],cr[0][va],cr[1][ua],cr[1][va]);
+  }
+  const caps=bpCapTris(segs, ax, c, ua, va);     // caps face −axis
+  for(let i=0;i<caps.length;i+=9){
+    // above piece sits on +axis side → its cut face (the bottom) faces −axis: use caps as-is.
+    above.push(caps[i],caps[i+1],caps[i+2],caps[i+3],caps[i+4],caps[i+5],caps[i+6],caps[i+7],caps[i+8]);
+    // below piece's cut face (its top) faces +axis: reverse winding.
+    below.push(caps[i],caps[i+1],caps[i+2],caps[i+6],caps[i+7],caps[i+8],caps[i+3],caps[i+4],caps[i+5]);
+  }
+  return {below,above};
+}
+function bpSplitAxis(tris, ax, cuts){
+  if(!cuts.length) return [tris];
+  const out=[]; let cur=tris;
+  for(const c of cuts){ const r=bpSplitOnePlane(cur, ax, c); out.push(r.below); cur=r.above; }
+  out.push(cur); return out;
+}
+function bpWorldPositions(mesh){
+  mesh.updateMatrixWorld(true);
+  const g=mesh.geometry.index?mesh.geometry.toNonIndexed():mesh.geometry, pos=g.attributes.position, m=mesh.matrixWorld;
+  const out=new Float32Array(pos.count*3), v=new THREE.Vector3();
+  for(let i=0;i<pos.count;i++){ v.set(pos.getX(i),pos.getY(i),pos.getZ(i)).applyMatrix4(m); out[i*3]=v.x; out[i*3+1]=v.y; out[i*3+2]=v.z; }
+  return Array.prototype.slice.call(out);
 }
 $("btnImportSTL").addEventListener("click",()=>$("stlInput").click());
 $("stlInput").addEventListener("change",e=>{
@@ -2387,8 +2602,13 @@ function frameAll(){
   if(!b){ camera.position.set(150,130,190); orbit.target.set(0,30,0); orbit.update(); return; }
   const c=new THREE.Vector3(); b.getCenter(c);
   const size=new THREE.Vector3(); b.getSize(size);
-  const r=Math.max(size.x,size.y,size.z,20);
-  const dist=r*2.2;
+  // fit the bounding sphere to the tighter of the vertical/horizontal FOV (+margin),
+  // so wide multi-plate layouts never spill off the viewport edges
+  const r=Math.max(0.5*Math.hypot(size.x,size.y,size.z),20);
+  const vFov=camera.fov*Math.PI/180, hFov=2*Math.atan(Math.tan(vFov/2)*Math.max(0.2,camera.aspect||1.6));
+  const dist=r/Math.sin(Math.min(vFov,hFov)/2)*1.12;
+  // grow the clip planes so large (metre-scale) layouts don't get clipped away
+  camera.far=Math.max(5000,(dist+r)*4); camera.near=Math.max(0.1,camera.far/200000); camera.updateProjectionMatrix();
   orbit.target.copy(c);
   camera.position.set(c.x+dist*0.7,c.y+dist*0.6,c.z+dist*0.9);
   orbit.update();
@@ -3061,7 +3281,16 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     const ny=Math.max(1,Math.ceil(H/Math.max(20,BV.z-m)-1e-6));
     return {part,box,size,scale:s,W,H,D,nx,ny,nz,total:nx*ny*nz};
   }
+  function bpUpdateTriNote(){
+    const el=$("bpTriNote"); if(!el) return;
+    const p=selected||parts[0];
+    if(!p || p.type!=="mesh"){ el.innerHTML='<span class="muted">Detail only applies to imported/boolean meshes.</span>'; return; }
+    const tris=Math.round(triCountGeom(p.mesh.geometry));
+    el.innerHTML='<span class="muted">'+tris.toLocaleString()+' triangles — splits at full detail. <b>Reduce</b> only to shrink file size; <b>Repair</b> if pieces show gaps.</span>';
+  }
+  window.bpUpdateTriNote=bpUpdateTriNote;
   window.bpUpdateSummary=function(){
+    bpUpdateTriNote();
     const el=$("bpSummary"); if(!el) return;
     const g=grid();
     if(!g){ el.innerHTML='<span class="muted">Import or select a model to begin.</span>'; return; }
@@ -3070,16 +3299,37 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
       (g.total<=1?"<br><span class='muted'>Already fits on one plate.</span>":"");
   };
 
+  let bpModelMesh=null;                         // the (scaled) source model, for seam-solidity tests
+  let bpConnSizeMM=8, bpConnPattern=1;          // pin diameter (mm) + how many pins per seam (0 = manual)
+  const _bpRay=new THREE.Raycaster();
+  function ptInModel(x,y,z){
+    if(!bpModelMesh) return true;
+    _bpRay.set(new THREE.Vector3(x,y,z), new THREE.Vector3(1,0,0));
+    return (_bpRay.intersectObject(bpModelMesh,true).length & 1)===1;     // odd crossings = inside the solid
+  }
+  function seamPt(axis,coord,a,b,off){ return axis==="x"?[coord+off,a,b] : axis==="y"?[a,coord+off,b] : [a,b,coord+off]; }
+  // place one pin (peg into A, clearance hole into B) at a seam spot, if both sides are solid there
+  function placePin(A,B,axis,coord,a,b,type,R,H){
+    const pa=seamPt(axis,coord,a,b,-2.5), pb=seamPt(axis,coord,a,b,2.5);
+    if(!ptInModel(pa[0],pa[1],pa[2]) || !ptInModel(pb[0],pb[1],pb[2])) return false;
+    const peg=connectorMesh(axis,coord,a,b,R,H,type), hole=connectorMesh(axis,coord,a,b,R+0.25,H+0.6,type);
+    try{ A.csg=A.csg.union(csgFromMesh(peg)); B.csg=B.csg.subtract(csgFromMesh(hole)); }catch(e){}
+    peg.geometry.dispose(); hole.geometry.dispose(); return true;
+  }
   function connBetween(A,B,axis,coord,type){
     const inP = axis==="x"?["y","z"] : axis==="y"?["x","z"] : ["x","y"];
     const lo0=Math.max(A[inP[0]+"0"],B[inP[0]+"0"]), hi0=Math.min(A[inP[0]+"1"],B[inP[0]+"1"]);
     const lo1=Math.max(A[inP[1]+"0"],B[inP[1]+"0"]), hi1=Math.min(A[inP[1]+"1"],B[inP[1]+"1"]);
     const d0=hi0-lo0, d1=hi1-lo1; if(d0<=3||d1<=3) return;
-    const a=(lo0+hi0)/2, b=(lo1+hi1)/2;
-    const R=Math.max(1.5,Math.min(5,Math.min(d0,d1)*0.16)), H=Math.max(4,Math.min(8,Math.min(d0,d1)*0.4));
-    const peg=connectorMesh(axis,coord,a,b,R,H,type), hole=connectorMesh(axis,coord,a,b,R+0.25,H+0.6,type);
-    try{ A.csg=A.csg.union(csgFromMesh(peg)); B.csg=B.csg.subtract(csgFromMesh(hole)); }catch(e){}
-    peg.geometry.dispose(); hole.geometry.dispose();
+    const R=Math.max(1.2, Math.min(bpConnSizeMM/2, Math.min(d0,d1)*0.42));
+    const H=Math.max(3,   Math.min(bpConnSizeMM,   Math.min(d0,d1)*1.2));
+    let spots;                                  // where on the seam the pins sit
+    if(bpConnPattern===2)      spots = d0>=d1 ? [[0.33,0.5],[0.67,0.5]] : [[0.5,0.33],[0.5,0.67]];
+    else if(bpConnPattern===4) spots = [[0.28,0.28],[0.72,0.28],[0.28,0.72],[0.72,0.72]];
+    else                       spots = [[0.5,0.5]];
+    let any=false;
+    spots.forEach(([u,v])=>{ if(placePin(A,B,axis,coord,lo0+(hi0-lo0)*u,lo1+(hi1-lo1)*v,type,R,H)) any=true; });
+    if(!any){ placePin(A,B,axis,coord,(lo0+hi0)/2,(lo1+hi1)/2,type,R,H); }   // fallback: try the centre
   }
 
   function meshTris(mesh){ const gg=mesh.geometry, pos=gg.attributes.position; return pos?Math.floor((gg.index?gg.index.count:pos.count)/3):0; }
@@ -3104,79 +3354,369 @@ addbar.addEventListener("pointermove",()=>wakePreview(3000));
     const g=grid();
     if(!g){ toast("Import or select a model first","err"); return; }
     if(g.total<=1){ toast("Already fits on one plate — nothing to split","ok"); return; }
-    const part=g.part, tris=meshTris(part.mesh);
-    if(tris>30000 && !confirm("This model is dense (~"+tris.toLocaleString()+" triangles). Boolean splitting it in the browser can be slow — a simpler/decimated model works best. Continue?")) return;
-    if(g.total>80 && !confirm(g.total+" pieces is a lot — may be slow or run low on memory. Continue?")) return;
-    const m=part.mesh;
+    if(g.total>600 && !confirm(g.total+" pieces is a lot — may be slow. Continue?")) return;
+    const part=g.part, m=part.mesh;
     if(g.scale!==1){ m.scale.multiplyScalar(g.scale); m.updateMatrixWorld(true); dropToPlate(part); m.updateMatrixWorld(true); }
-    const box=new THREE.Box3().setFromObject(m), eps=0.04, BIG=1e4;
-    const cmx=(box.min.x+box.max.x)/2, cmy=(box.min.y+box.max.y)/2, cmz=(box.min.z+box.max.z)/2;
+    bpModelMesh=m;
+    const box=new THREE.Box3().setFromObject(m);
     const bx=axisBoundaries(box.min.x,box.max.x,g.nx), by=axisBoundaries(box.min.y,box.max.y,g.ny), bz=axisBoundaries(box.min.z,box.max.z,g.nz);
-    const useConn=$("bpConn").checked, type=$("bpConnType").value;
+    bpConnSizeMM=parseFloat($("bpConnSize").value)||8;
+    bpConnPattern=parseInt($("bpConnPattern").value);
     const btn=$("bpGenerate"); btn.disabled=true;
-    const base=csgFromMesh(m);
-    const prog=(label,i,n)=>toast(label+" — "+Math.round(i/Math.max(1,n)*100)+"%");
-
-    /* Hierarchical cut: X slabs -> Y rows -> Z cells. Each step works on a
-       smaller piece, instead of re-cutting the whole model for every cell. */
-    const slabs=[];
-    const xJobs=[]; for(let ix=0;ix<g.nx;ix++) xJobs.push(ix);
-    toast("Splitting — 0%");
-    chunk(xJobs, ix=>{
-      const c=base.intersect(boxCsg((bx[ix]+bx[ix+1])/2,cmy,cmz, bx[ix+1]-bx[ix]+2*eps, BIG, BIG));
-      if(csgToPositions(c).length>=9) slabs.push({csg:c,ix});
-    }, (i,n)=>prog("Splitting width",i,n), stageRows);
-
-    function stageRows(){
-      const rows=[], yJobs=[];
-      slabs.forEach(sl=>{ for(let iy=0;iy<g.ny;iy++) yJobs.push({sl,iy}); });
-      chunk(yJobs, job=>{
-        const c=job.sl.csg.intersect(boxCsg(cmx,(by[job.iy]+by[job.iy+1])/2,cmz, BIG, by[job.iy+1]-by[job.iy]+2*eps, BIG));
-        if(csgToPositions(c).length>=9) rows.push({csg:c,ix:job.sl.ix,iy:job.iy});
-      }, (i,n)=>prog("Splitting height",i,n), ()=>stageCells(rows));
-    }
-    function stageCells(rows){
-      const cells={}, zJobs=[];
-      rows.forEach(r=>{ for(let iz=0;iz<g.nz;iz++) zJobs.push({r,iz}); });
-      chunk(zJobs, job=>{
-        const r=job.r, iz=job.iz;
-        const c=r.csg.intersect(boxCsg(cmx,cmy,(bz[iz]+bz[iz+1])/2, BIG, BIG, bz[iz+1]-bz[iz]+2*eps));
-        if(csgToPositions(c).length>=9) cells[r.ix+"_"+r.iy+"_"+iz]={csg:c,ix:r.ix,iy:r.iy,iz:iz,
-          x0:bx[r.ix],x1:bx[r.ix+1],y0:by[r.iy],y1:by[r.iy+1],z0:bz[iz],z1:bz[iz+1]};
-      }, (i,n)=>prog("Splitting depth",i,n), ()=>stageConnect(cells));
-    }
-    function stageConnect(cells){
-      const keys=Object.keys(cells);
-      if(keys.length<2){ toast("Couldn't split — the model may not be watertight. Try a repaired STL.","err"); btn.disabled=false; return; }
-      if(!useConn){ stageBuild(cells,keys); return; }
-      chunk(keys, k=>{ const c=cells[k];
-        const X=cells[(c.ix+1)+"_"+c.iy+"_"+c.iz]; if(X) connBetween(c,X,"x",c.x1,type);
-        const Y=cells[c.ix+"_"+(c.iy+1)+"_"+c.iz]; if(Y) connBetween(c,Y,"y",c.y1,type);
-        const Z=cells[c.ix+"_"+c.iy+"_"+(c.iz+1)]; if(Z) connBetween(c,Z,"z",c.z1,type);
-      }, (i,n)=>prog("Adding connectors",i,n), ()=>stageBuild(cells,keys));
-    }
-    function stageBuild(cells,keys){
-      removePart(part);
-      let first=null, n=0;
-      chunk(keys, k=>{ const c=cells[k], pos=csgToPositions(c.csg); if(pos.length<9) return;
-        const np=addPart("mesh",{params:{positions:pos.map(r3)}, color:PALETTE[n%PALETTE.length],
-          name:"Tile "+(c.ix+1)+"·"+(c.iz+1)+"·"+(c.iy+1), position:[0,0,0]});
-        if(!first) first=np; n++;
-      }, (i,nn)=>prog("Building pieces",i,nn), ()=>{
-        if(typeof autoArrange==="function") autoArrange();
-        if(first) select(first);
-        frameAll(); pushUndo(); updateStats();
-        toast("Split into "+n+" pieces"+(useConn?" + "+type+" connectors":"")+" — laid out on the bed","ok");
-        btn.disabled=false;
-      });
-    }
+    /* PLANE-CLIP split: weld+fill holes, then clip the full-resolution mesh to
+       each grid cell and cap the cuts. Linear + low-memory → no boolean engine,
+       no crash, handles million-triangle meshes. */
+    toast("Preparing mesh…");
+    setTimeout(()=>{
+     try{
+      let bm=m;
+      try{ const rep=repairGeometry(m.geometry);
+        const r2=new THREE.Mesh(rep.geo); r2.position.copy(m.position); r2.quaternion.copy(m.quaternion); r2.scale.copy(m.scale); r2.updateMatrixWorld(true); bm=r2; }catch(e){}
+      const positions=bpWorldPositions(bm);
+      const yCuts=by.slice(1,-1), zCuts=bz.slice(1,-1);
+      toast("Cutting pieces — 0%");
+      setTimeout(()=>{
+       let xs;
+       try{ xs=bpSplitAxis(positions, 0, bx.slice(1,-1)); }
+       catch(e){ console.error(e); toast("Split failed: "+e.message,"err"); btn.disabled=false; return; }
+       const made=[]; const xJobs=xs.map((slab,ix)=>({slab,ix}));
+       chunk(xJobs, job=>{
+         const ys=bpSplitAxis(job.slab, 1, yCuts);
+         ys.forEach((yslab,iy)=>{ const zs=bpSplitAxis(yslab, 2, zCuts);
+           zs.forEach((cell,iz)=>{ if(cell.length<9) return;
+             const np=addPart("mesh",{params:{positions:cell.map(r3)}, color:PALETTE[made.length%PALETTE.length],
+               name:"Tile "+(job.ix+1)+"·"+(iz+1)+"·"+(iy+1), position:[0,0,0]});
+             np.bpGrid={ix:job.ix,iy:iy,iz:iz};
+             np.bpCell={x0:bx[job.ix],x1:bx[job.ix+1],y0:by[iy],y1:by[iy+1],z0:bz[iz],z1:bz[iz+1]};
+             made.push(np);
+           });
+         });
+       }, (i,n)=>toast("Cutting pieces — "+Math.round(i/Math.max(1,n)*100)+"%"), ()=>{
+         if(made.length<2){ made.forEach(removePart); toast("Couldn't split this model.","err"); btn.disabled=false; return; }
+         removePart(part);
+         const plates=arrangeOntoPlates(made);
+         renderBpResult(plates);
+         if(made[0]) select(made[0]);
+         frameAll(); pushUndo(); updateStats();
+         toast("Split into "+made.length+" pieces on "+plates.length+" plate"+(plates.length>1?"s":""),"ok");
+         btn.disabled=false;
+         if(bpConnPattern===0) setTimeout(bpStartEdit,300);   // Manual placement chosen → drop into the editor
+       });
+      },30);
+     }catch(e){ console.error(e); toast("Split failed: "+e.message,"err"); btn.disabled=false; }
+    },30);
   }
+
+  /* ---- lay tiles onto printer-bed-sized plates, with outlines + labels ---- */
+  let bpPlates=[]; const bpPlateGroup=new THREE.Group(); scene.add(bpPlateGroup); let bpLabels=[];
+  function clearPlates(){
+    bpPlateGroup.traverse(o=>{ if(o.geometry&&o.geometry.dispose)o.geometry.dispose();
+      if(o.material){ if(o.material.map&&o.material.map.dispose)o.material.map.dispose(); if(o.material.dispose)o.material.dispose(); } });
+    bpPlateGroup.clear();
+    bpLabels.forEach(e=>e.remove()); bpLabels=[]; bpPlates=[];
+    [grid,plate,plateEdges].forEach(o=>{ if(o) o.visible=true; });    // restore the main build plate
+    if($("bpResult")) $("bpResult").innerHTML="";
+  }
+  window.bpClearPlates=clearPlates;
+  /* rotate a piece so its biggest flat cut-face rests on the bed — stable to print
+     (flat base, no supports there) and that face is the surface that mates to its
+     neighbour. Cut faces are axis-aligned, so we sum face area per ±axis and lay
+     the largest one down. */
+  function bpLayFlatQuat(mesh){
+    const pos=mesh.geometry.attributes.position; if(!pos) return new THREE.Quaternion();
+    const mn=[Infinity,Infinity,Infinity], mx=[-Infinity,-Infinity,-Infinity];
+    for(let i=0;i<pos.count;i++){ const x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+      if(x<mn[0])mn[0]=x; if(x>mx[0])mx[0]=x; if(y<mn[1])mn[1]=y; if(y>mx[1])mx[1]=y; if(z<mn[2])mn[2]=z; if(z>mx[2])mx[2]=z; }
+    const tol=0.6, A={"+x":0,"-x":0,"+y":0,"-y":0,"+z":0,"-z":0};
+    const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),ab=new THREE.Vector3(),ac=new THREE.Vector3(),n=new THREE.Vector3();
+    for(let i=0;i<pos.count;i+=3){ a.fromBufferAttribute(pos,i); b.fromBufferAttribute(pos,i+1); c.fromBufferAttribute(pos,i+2);
+      ab.subVectors(b,a); ac.subVectors(c,a); n.crossVectors(ab,ac); const area=n.length()*0.5; if(area<1e-7) continue; n.multiplyScalar(1/(area*2));
+      // only count a flat face if it sits ON a boundary extreme — that face becomes the actual base when laid down
+      if(n.x>0.98 && a.x>mx[0]-tol&&b.x>mx[0]-tol&&c.x>mx[0]-tol) A["+x"]+=area;
+      else if(n.x<-0.98 && a.x<mn[0]+tol&&b.x<mn[0]+tol&&c.x<mn[0]+tol) A["-x"]+=area;
+      else if(n.y>0.98 && a.y>mx[1]-tol&&b.y>mx[1]-tol&&c.y>mx[1]-tol) A["+y"]+=area;
+      else if(n.y<-0.98 && a.y<mn[1]+tol&&b.y<mn[1]+tol&&c.y<mn[1]+tol) A["-y"]+=area;
+      else if(n.z>0.98 && a.z>mx[2]-tol&&b.z>mx[2]-tol&&c.z>mx[2]-tol) A["+z"]+=area;
+      else if(n.z<-0.98 && a.z<mn[2]+tol&&b.z<mn[2]+tol&&c.z<mn[2]+tol) A["-z"]+=area;
+    }
+    let best="-y",bv=-1; for(const k in A){ if(A[k]>bv){ bv=A[k]; best=k; } }
+    const D={"+x":[1,0,0],"-x":[-1,0,0],"+y":[0,1,0],"-y":[0,-1,0],"+z":[0,0,1],"-z":[0,0,-1]}[best];
+    return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(D[0],D[1],D[2]), new THREE.Vector3(0,-1,0));
+  }
+  function arrangeOntoPlates(tiles){
+    clearPlates();
+    bpPlateGroup.visible=true;                    // ensure beds show (may have been hidden by edit/guide)
+    tiles.forEach(p=>{ p.mesh.position.set(0,0,0); p.mesh.quaternion.copy(bpLayFlatQuat(p.mesh)); p.mesh.updateMatrixWorld(true); });   // lay each piece flat on its biggest cut-face
+    const pw=Math.max(40,BV.x), pd=Math.max(40,BV.y), gap=8, plateGap=Math.max(30,pw*0.2);
+    const items=tiles.map(p=>{ p.mesh.updateMatrixWorld(true); const b=new THREE.Box3().setFromObject(p.mesh),s=new THREE.Vector3(); b.getSize(s); return {p,w:s.x,d:s.z}; });
+    items.sort((a,b)=>(b.w*b.d)-(a.w*a.d));
+    const plates=[]; let pl=null;
+    const addPlate=()=>{ pl={tiles:[],x:gap,z:gap,rowD:0}; plates.push(pl); };
+    addPlate();
+    items.forEach(t=>{
+      if(pl.x>gap && pl.x+t.w>pw-gap){ pl.x=gap; pl.z+=pl.rowD+gap; pl.rowD=0; }   // wrap to next row
+      if(pl.tiles.length>0 && pl.z+t.d>pd-gap){ addPlate(); }                       // doesn't fit → new plate
+      t.lx=pl.x+t.w/2; t.lz=pl.z+t.d/2; pl.tiles.push(t); pl.x+=t.w+gap; pl.rowD=Math.max(pl.rowD,t.d);
+    });
+    const cols=Math.ceil(Math.sqrt(plates.length)), stepX=pw+plateGap, stepZ=pd+plateGap;
+    const totalW=cols*stepX-plateGap, rows=Math.ceil(plates.length/cols), totalD=rows*stepZ-plateGap;
+    plates.forEach((plate,pi)=>{
+      const gx=pi%cols, gz=Math.floor(pi/cols);
+      const ox=gx*stepX-totalW/2+pw/2, oz=gz*stepZ-totalD/2+pd/2;
+      plate.idx=pi; plate.cx=ox; plate.cz=oz;
+      plate.tiles.forEach(t=>{ const m=t.p.mesh; t.p.bpAsm=m.position.clone(); m.updateMatrixWorld(true);
+        const b=new THREE.Box3().setFromObject(m), c=new THREE.Vector3(); b.getCenter(c);
+        m.position.x+=(ox-pw/2+t.lx)-c.x; m.position.z+=(oz-pd/2+t.lz)-c.z;
+        if(typeof dropToPlate==="function") dropToPlate(t.p); t.p.bpPlate=pi; });
+      bpPlateGroup.add(buildBed(pi+1, ox, oz, pw, pd));
+    });
+    [grid,plate,plateEdges].forEach(o=>{ if(o) o.visible=false; });   // hide the single origin plate — each bed is framed
+    bpPlates=plates; return plates;
+  }
+  /* a printer-bed frame: dark platform + grid + bright border + a big "BED N" plate */
+  function buildBed(num, ox, oz, pw, pd){
+    const g=new THREE.Group(); g.position.set(ox,0,oz);
+    const plat=new THREE.Mesh(new THREE.PlaneGeometry(pw,pd), new THREE.MeshBasicMaterial({color:0x0d1016,transparent:true,opacity:0.6,side:THREE.DoubleSide}));
+    plat.rotation.x=-Math.PI/2; plat.position.y=0.02; g.add(plat);
+    const big=Math.max(pw,pd), div=Math.max(2,Math.round(big/40));
+    const grid=new THREE.GridHelper(big, div, 0x39414f, 0x222934); grid.position.y=0.035; grid.scale.set(pw/big,1,pd/big); g.add(grid);
+    const border=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(pw,pd)), new THREE.LineBasicMaterial({color:0x8088ff}));
+    border.rotation.x=-Math.PI/2; border.position.y=0.06; g.add(border);
+    const lw=Math.min(pw*0.7,110), lab=bedLabel("BED "+num, lw);
+    lab.rotation.x=-Math.PI/2; lab.position.set(0, 0.08, pd/2 - lw*0.28); g.add(lab);   // near the front edge
+    return g;
+  }
+  function bedLabel(text, width){
+    const c=document.createElement("canvas"); c.width=256; c.height=120; const x=c.getContext("2d");
+    x.fillStyle="rgba(20,24,30,0.92)"; x.fillRect(0,0,256,120);
+    x.strokeStyle="#8088ff"; x.lineWidth=7; x.strokeRect(5,5,246,110);
+    x.fillStyle="#dfe2ff"; x.font="bold 66px sans-serif"; x.textAlign="center"; x.textBaseline="middle"; x.fillText(text,128,64);
+    const tex=new THREE.CanvasTexture(c); tex.anisotropy=4;
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(width,width*120/256), new THREE.MeshBasicMaterial({map:tex,transparent:true,depthTest:false}));
+    m.renderOrder=10; return m;
+  }
+  window.bpPositionLabels=function(){};   // labels are now in-scene (CanvasTexture), no per-frame work
+  function exportPlate(i){
+    const list=parts.filter(p=>p.bpPlate===i);
+    if(!list.length){ toast("That plate is empty","err"); return; }
+    exportPartsSTL(list, "forge3d-plate-"+(i+1)+".stl", "Forge3D Big Print plate "+(i+1));
+    toast("Exported Plate "+(i+1),"ok");
+  }
+  function exportAllPlates(){
+    if(!bpPlates.length){ toast("Split a model first","err"); return; }
+    toast("Downloading "+bpPlates.length+" plates + assembly guide…","ok");
+    bpPlates.forEach((pl,i)=>setTimeout(()=>exportPlate(i), i*400));   // stagger so the browser allows the downloads
+    setTimeout(()=>generateAssemblyGuide(true), bpPlates.length*400+250);
+  }
+  function colorHex(p){ try{ return "#"+p.mesh.material.color.getHexString(); }catch(e){ return "#8a90a6"; } }
+  function wrapText(ctx,text,x0,y0,maxW,lh){ const words=text.split(" "); let line="",y=y0;
+    words.forEach(w=>{ const test=line?line+" "+w:w; if(ctx.measureText(test).width>maxW && line){ ctx.fillText(line,x0,y); line=w; y+=lh; } else line=test; });
+    if(line) ctx.fillText(line,x0,y); return y; }
+  /* Render an auto-generated, numbered, exploded assembly diagram to a PNG —
+     multiple camera angles (count scales with piece count) so every piece is
+     clearly visible; only pieces actually visible in a view get a number
+     (occlusion-tested), so a number never lands on the wrong piece. */
+  function generateAssemblyGuide(quiet){
+    const tiles=parts.filter(p=>p.bpAsm);
+    if(!tiles.length){ if(!quiet) toast("Split a model first","err"); return; }
+    const ordered=tiles.slice().sort((a,b)=>{ const A=a.bpGrid||{ix:0,iy:0,iz:0}, B=b.bpGrid||{ix:0,iy:0,iz:0};
+      return (A.iy-B.iy)||(A.iz-B.iz)||(A.ix-B.ix); });     // bottom layer first, then row, then column
+    ordered.forEach((t,i)=>t.bpOrder=i+1);
+    const meshes=tiles.map(t=>t.mesh), tileSet=new Set(meshes);
+    // snapshot state we mutate
+    const savedPos=tiles.map(t=>t.mesh.position.clone()), savedQuat=tiles.map(t=>t.mesh.quaternion.clone());
+    const cam0=camera.position.clone(), tgt0=orbit.target.clone(), near0=camera.near, far0=camera.far, up0=camera.up.clone();
+    const selBak=selected, gizVis=tcontrol.visible;
+    select(null); tcontrol.detach(); tcontrol.visible=false; if(typeof hideHandles==="function") hideHandles();
+    // hide EVERYTHING that isn't a piece or a light (kills any plate/grid/frame leak)
+    const hidden=[]; const hasTile=o=>{ let f=false; o.traverse(n=>{ if(tileSet.has(n)) f=true; }); return f; };
+    scene.children.forEach(o=>{ if(o.isLight||/Light/.test(o.type)||hasTile(o)) return; hidden.push([o,o.visible]); o.visible=false; });
+    // reassemble, then explode outward from the model centre
+    tiles.forEach(t=>{ t.mesh.position.copy(t.bpAsm); t.mesh.quaternion.set(0,0,0,1); t.mesh.updateMatrixWorld(true); });   // reassemble: undo lay-flat
+    const asmBox=new THREE.Box3(); tiles.forEach(t=>asmBox.expandByObject(t.mesh));
+    const span0=new THREE.Vector3(); asmBox.getSize(span0); const Casm=new THREE.Vector3(); asmBox.getCenter(Casm);
+    tiles.forEach(t=>{ const b=new THREE.Box3().setFromObject(t.mesh), c=new THREE.Vector3(); b.getCenter(c);
+      t.mesh.position.add(c.sub(Casm).multiplyScalar(0.28)); });   // gentle separation — keeps irregular models readable
+    const centers=new Map(), exBox=new THREE.Box3();
+    tiles.forEach(t=>{ t.mesh.updateMatrixWorld(true); exBox.expandByObject(t.mesh); const b=new THREE.Box3().setFromObject(t.mesh), c=new THREE.Vector3(); b.getCenter(c); centers.set(t,c); });
+    const C=new THREE.Vector3(); exBox.getCenter(C); const exSpan=new THREE.Vector3(); exBox.getSize(exSpan);
+    const R=0.5*Math.hypot(exSpan.x,exSpan.y,exSpan.z);
+    const src=renderer.domElement, cw=src.width, ch=src.height;
+    const vFov=camera.fov*Math.PI/180, hFov=2*Math.atan(Math.tan(vFov/2)*(cw/ch));
+    const dist=R/Math.sin(Math.min(vFov,hFov)/2)*1.18, el=26*Math.PI/180;
+    const rc=new THREE.Raycaster();
+    // how many angles — scale with piece count
+    const nv = tiles.length<=6?4 : tiles.length<=16?6 : 8;
+    const views=[];
+    for(let i=0;i<nv;i++){
+      const az=Math.PI/4 + i*2*Math.PI/nv;
+      camera.up.set(0,1,0);
+      camera.position.set(C.x+dist*Math.cos(el)*Math.cos(az), C.y+dist*Math.sin(el), C.z+dist*Math.cos(el)*Math.sin(az));
+      camera.near=Math.max(0.1,dist/600); camera.far=dist*4; camera.updateProjectionMatrix();
+      camera.lookAt(C); camera.updateMatrixWorld(true);
+      renderer.render(scene,camera);
+      const snap=document.createElement("canvas"); snap.width=cw; snap.height=ch; snap.getContext("2d").drawImage(src,0,0);
+      const marks=[];
+      ordered.forEach(t=>{ const c=centers.get(t); const dir=c.clone().sub(camera.position).normalize();
+        rc.set(camera.position,dir); const hit=rc.intersectObjects(meshes,false)[0];
+        if(!hit || hit.object!==t.mesh) return;                       // occluded in this view
+        const n=c.clone().project(camera); if(n.z>1||Math.abs(n.x)>1||Math.abs(n.y)>1) return;
+        marks.push({u:n.x*0.5+0.5, v:-n.y*0.5+0.5, t}); });
+      views.push({snap,marks});
+    }
+    // ---- compose contact sheet: title + grid of views + legend ----
+    const cols=Math.ceil(Math.sqrt(nv)), rows=Math.ceil(nv/cols);
+    const cellW=540, cellH=Math.round(cellW*ch/cw), titleH=58, legendW=300, gap=8;
+    const cv=document.createElement("canvas"); cv.width=cols*cellW+(cols+1)*gap+legendW; cv.height=titleH+rows*cellH+(rows+1)*gap;
+    const x=cv.getContext("2d");
+    x.fillStyle="#0f1318"; x.fillRect(0,0,cv.width,cv.height);
+    x.fillStyle="#14181e"; x.fillRect(0,0,cv.width,titleH); x.fillStyle="#6366f1"; x.fillRect(0,titleH-3,cv.width,3);
+    x.fillStyle="#f1f3f6"; x.font="bold 22px sans-serif"; x.textBaseline="middle"; x.textAlign="left";
+    x.fillText("Forge3D — Assembly guide", 16, titleH*0.5);
+    const plateCount=bpPlates.length || (tiles.reduce((m,t)=>Math.max(m,(t.bpPlate||0)+1),0));
+    x.fillStyle="#9aa4b2"; x.font="15px sans-serif"; x.textAlign="right";
+    x.fillText(Math.round(span0.x)+"×"+Math.round(span0.z)+"×"+Math.round(span0.y)+" mm · "+tiles.length+" pieces · "+plateCount+" plate"+(plateCount>1?"s":"")+" · "+nv+" views", cv.width-16, titleH*0.5);
+    views.forEach((v,i)=>{
+      const gx=i%cols, gy=Math.floor(i/cols);
+      const ox=gap+gx*(cellW+gap), oy=titleH+gap+gy*(cellH+gap);
+      x.drawImage(v.snap, ox, oy, cellW, cellH);
+      x.strokeStyle="#222a36"; x.lineWidth=1; x.strokeRect(ox+.5,oy+.5,cellW,cellH);
+      x.fillStyle="rgba(12,14,18,.7)"; x.fillRect(ox,oy,84,24);
+      x.fillStyle="#aeb4ff"; x.font="bold 14px sans-serif"; x.textAlign="left"; x.textBaseline="middle"; x.fillText("View "+(i+1),ox+8,oy+12);
+      v.marks.forEach(m=>{ const px=ox+m.u*cellW, py=oy+m.v*cellH, r=15;
+        x.beginPath(); x.arc(px,py,r,0,7); x.fillStyle=colorHex(m.t); x.fill();
+        x.lineWidth=3; x.strokeStyle="#0b0d10"; x.stroke();
+        x.fillStyle="#0b0d10"; x.font="bold 17px sans-serif"; x.textAlign="center"; x.textBaseline="middle"; x.fillText(String(m.t.bpOrder),px,py+1); });
+    });
+    // legend down the right
+    const lx=cols*cellW+(cols+1)*gap, pad=16; let ly=titleH+pad+10;
+    x.textAlign="left"; x.fillStyle="#aeb4ff"; x.font="bold 17px sans-serif"; x.fillText("Fit in this order →", lx+pad, ly); ly+=26;
+    const rowH=Math.max(16,Math.min(26,(cv.height-ly-70)/Math.max(1,ordered.length)));
+    ordered.forEach(t=>{ const g=t.bpGrid||{ix:0,iy:0,iz:0};
+      x.fillStyle=colorHex(t); x.beginPath(); x.arc(lx+pad+9, ly+rowH*0.3, 9,0,7); x.fill();
+      x.fillStyle="#0b0d10"; x.font="bold 12px sans-serif"; x.textAlign="center"; x.fillText(String(t.bpOrder), lx+pad+9, ly+rowH*0.3+1); x.textAlign="left";
+      x.fillStyle="#d6dbe2"; x.font="13px sans-serif"; x.fillText("Plate "+(t.bpPlate+1)+" · L"+(g.iy+1)+" R"+(g.iz+1)+" C"+(g.ix+1), lx+pad+24, ly+rowH*0.3+1);
+      ly+=rowH; });
+    ly+=12; x.fillStyle="#9aa4b2"; x.font="italic 12.5px sans-serif";
+    wrapText(x,"Print each plate, then push the pieces together in number order (lowest layer first). The pins at each seam set the alignment. Each view is the same model rotated — use whichever angle shows the piece you need.", lx+pad, ly, legendW-pad*2, 17);
+    // ---- restore everything ----
+    tiles.forEach((t,i)=>{ t.mesh.position.copy(savedPos[i]); t.mesh.quaternion.copy(savedQuat[i]); t.mesh.updateMatrixWorld(true); });
+    hidden.forEach(([o,v])=>o.visible=v);
+    camera.up.copy(up0); camera.position.copy(cam0); orbit.target.copy(tgt0); camera.near=near0; camera.far=far0; camera.updateProjectionMatrix(); orbit.update();
+    tcontrol.visible=gizVis; if(selBak) select(selBak); wake(500);
+    cv.toBlob(b=>{ if(b){ downloadBlob(b,"forge3d-assembly-guide.png"); if(!quiet) toast("Assembly guide saved ("+nv+" views)","ok"); } }, "image/png");
+  }
+  function renderBpResult(plates){
+    const el=$("bpResult"); if(!el) return;
+    if(!plates||!plates.length){ el.innerHTML=""; return; }
+    let h='<div class="note" style="margin:0 0 7px"><b>'+plates.length+' plate'+(plates.length>1?'s':'')+'</b> · '+BV.x+'×'+BV.y+' mm bed each</div>'+
+      '<button class="tbtn primary full" id="bpExportAll">⬇ Export all plates ('+plates.length+' STL)</button>'+
+      '<button class="tbtn full" id="bpGuide" style="margin-top:6px">🖼 Assembly guide (PNG)</button>'+
+      '<button class="tbtn full" id="bpManual" style="margin-top:6px">🔗 Place connectors by hand</button>'+
+      '<div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">';
+    plates.forEach((pl,i)=>{ h+='<div class="field" style="margin:0;gap:6px"><label style="width:auto;flex:1">Plate '+(i+1)+' · '+pl.tiles.length+' pc</label>'+
+      '<button class="tbtn ghost" data-pv="'+i+'" style="padding:5px 9px">View</button>'+
+      '<button class="tbtn ghost" data-pe="'+i+'" style="padding:5px 9px">Export</button></div>'; });
+    h+='</div>';
+    el.innerHTML=h;
+    $("bpExportAll").onclick=exportAllPlates;
+    $("bpGuide").onclick=()=>generateAssemblyGuide();
+    $("bpManual").onclick=bpStartEdit;
+    el.querySelectorAll("[data-pe]").forEach(b=>b.onclick=()=>exportPlate(+b.dataset.pe));
+    el.querySelectorAll("[data-pv]").forEach(b=>b.onclick=()=>{ const pl=bpPlates[+b.dataset.pv]; if(pl){ if(pl.tiles[0]) select(pl.tiles[0].p);
+      orbit.target.set(pl.cx,0,pl.cz); camera.position.set(pl.cx+BV.x*1.3, BV.x*1.1, pl.cz+BV.x*1.3); orbit.update(); } });
+  }
+
+  /* ---------- manual connector placement: click a seam to drop a pin ---------- */
+  let bpEditing=false, bpDownXY=null, _bpDown=null, _bpUp=null;
+  function setPartGeom(part,csg){
+    const flat=csgToPositions(csg); const g=new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(flat,3)); g.computeVertexNormals();
+    part.mesh.geometry.dispose(); part.mesh.geometry=g;
+  }
+  function addManualPin(A,B,axis,coord,a,b){
+    const type=$("bpConnType").value, S=parseFloat($("bpConnSize").value)||8;
+    const R=Math.max(1.2,S/2), H=Math.max(3,S);
+    const peg=connectorMesh(axis,coord,a,b,R,H,type), hole=connectorMesh(axis,coord,a,b,R+0.25,H+0.6,type);
+    const cA=csgFromMesh(A.mesh).union(csgFromMesh(peg)), cB=csgFromMesh(B.mesh).subtract(csgFromMesh(hole));
+    peg.geometry.dispose(); hole.geometry.dispose(); setPartGeom(A,cA); setPartGeom(B,cB);
+  }
+  // place a pin at the seam nearest to a screen click (mx,my in NDC); returns true if placed
+  window.bpPlacePinAt=function(mx,my){
+    const tiles=parts.filter(p=>p.bpCell); const cmap={}; tiles.forEach(p=>cmap[p.bpGrid.ix+"_"+p.bpGrid.iy+"_"+p.bpGrid.iz]=p);
+    const rc=new THREE.Raycaster(); rc.setFromCamera({x:mx,y:my}, camera);
+    const hit=rc.intersectObjects(tiles.map(p=>p.mesh),false)[0]; if(!hit) return false;
+    const A=tiles.find(p=>p.mesh===hit.object); if(!A||!A.bpCell) return false;
+    const P=hit.point, c=A.bpCell, g=A.bpGrid;
+    const faces=[
+      {ax:"x",coord:c.x0,d:Math.abs(P.x-c.x0),di:[-1,0,0]},{ax:"x",coord:c.x1,d:Math.abs(P.x-c.x1),di:[1,0,0]},
+      {ax:"y",coord:c.y0,d:Math.abs(P.y-c.y0),di:[0,-1,0]},{ax:"y",coord:c.y1,d:Math.abs(P.y-c.y1),di:[0,1,0]},
+      {ax:"z",coord:c.z0,d:Math.abs(P.z-c.z0),di:[0,0,-1]},{ax:"z",coord:c.z1,d:Math.abs(P.z-c.z1),di:[0,0,1]}
+    ].sort((u,v)=>u.d-v.d);
+    for(const f of faces){
+      const B=cmap[(g.ix+f.di[0])+"_"+(g.iy+f.di[1])+"_"+(g.iz+f.di[2])]; if(!B) continue;
+      const inP=f.ax==="x"?["y","z"]:f.ax==="y"?["x","z"]:["x","y"];
+      const lo0=Math.max(c[inP[0]+"0"],B.bpCell[inP[0]+"0"]), hi0=Math.min(c[inP[0]+"1"],B.bpCell[inP[0]+"1"]);
+      const lo1=Math.max(c[inP[1]+"0"],B.bpCell[inP[1]+"0"]), hi1=Math.min(c[inP[1]+"1"],B.bpCell[inP[1]+"1"]);
+      const a=Math.min(hi0-3,Math.max(lo0+3,P[inP[0]])), b=Math.min(hi1-3,Math.max(lo1+3,P[inP[1]]));
+      try{ addManualPin(A,B,f.ax,f.coord,a,b); pushUndo(); updateStats(); toast("Pin added between piece "+(A.bpOrder||"")+" & "+(B.bpOrder||""),"ok"); }
+      catch(e){ toast("Couldn't add a pin there","err"); }
+      wake(900); return true;
+    }
+    toast("No neighbouring piece on that face — click nearer a seam","err"); return false;
+  };
+  function bpStartEdit(){
+    const tiles=parts.filter(p=>p.bpCell); if(tiles.length<2){ toast("Split a model first","err"); return; }
+    bpEditing=true;
+    bpPlateGroup.visible=false; [grid,plate,plateEdges].forEach(o=>{ if(o) o.visible=false; });
+    tiles.forEach(p=>{ p.mesh.position.copy(p.bpAsm||new THREE.Vector3()); p.mesh.quaternion.set(0,0,0,1); p.mesh.updateMatrixWorld(true); });   // reassemble: undo lay-flat
+    select(null); tcontrol.detach(); tcontrol.visible=false; if(typeof hideHandles==="function") hideHandles();
+    frameAll(); wake(1200);
+    _bpDown=e=>{ bpDownXY=[e.clientX,e.clientY]; };
+    _bpUp=e=>{ if(!bpEditing||!bpDownXY) return; if(Math.hypot(e.clientX-bpDownXY[0],e.clientY-bpDownXY[1])>6) return;  // was a drag/orbit
+      const r=renderer.domElement.getBoundingClientRect();
+      const mx=((e.clientX-r.left)/r.width)*2-1, my=-((e.clientY-r.top)/r.height)*2+1;
+      if(window.bpPlacePinAt(mx,my)){ setTimeout(()=>{ select(null); tcontrol.visible=false; },0); } };
+    renderer.domElement.addEventListener("pointerdown",_bpDown);
+    renderer.domElement.addEventListener("pointerup",_bpUp);
+    const el=$("bpResult"); if(el){ el.innerHTML='<div class="note" style="margin:0 0 8px;line-height:1.6">'+
+      '<b>Manual connectors</b><br>Click on a <b>seam between two pieces</b> to drop a pin (size/type from above). Drag to rotate. Press <b>Ctrl+Z</b> to undo the last pin.</div>'+
+      '<button class="tbtn primary full" id="bpDoneEdit">✓ Done — arrange on plates</button>';
+      $("bpDoneEdit").onclick=bpEndEdit; }
+    toast("Click a seam between two pieces to drop a pin","ok");
+  }
+  function bpEndEdit(){
+    bpEditing=false; bpDownXY=null;
+    if(_bpDown){ renderer.domElement.removeEventListener("pointerdown",_bpDown); _bpDown=null; }
+    if(_bpUp){ renderer.domElement.removeEventListener("pointerup",_bpUp); _bpUp=null; }
+    const tiles=parts.filter(p=>p.bpCell);
+    const plates=arrangeOntoPlates(tiles); renderBpResult(plates);
+    frameAll(); pushUndo(); updateStats(); wake(900);
+    toast("Connectors set — pieces back on plates","ok");
+  }
+  window.bpStartManual=bpStartEdit;
 
   if($("bpImport")) $("bpImport").addEventListener("click",()=>$("stlInput").click());
   if($("bpHeight")) $("bpHeight").addEventListener("input",()=>{ if(presetSel) presetSel.value=String(BP_PRESETS.length-1); bpUpdateSummary(); });
   if(presetSel) presetSel.addEventListener("change",()=>{ const p=BP_PRESETS[+presetSel.value]; if(p&&p[1]) $("bpHeight").value=p[1]; bpUpdateSummary(); });
   if($("bpPrinter")) $("bpPrinter").addEventListener("change",e=>{ applyPrinter(e.target.value); bpUpdateSummary(); });
   if($("bpGenerate")) $("bpGenerate").addEventListener("click",generate);
+  if($("bpReduce")) $("bpReduce").addEventListener("click",()=>{
+    const p=selected||parts[0]; if(!p){ toast("Import or select a model first","err"); return; }
+    reduceMesh(p, parseInt($("bpDetail").value)||90); bpUpdateSummary(); });
+  if($("bpRepair")) $("bpRepair").addEventListener("click",()=>{
+    const p=selected||parts[0]; if(!p){ toast("Import or select a model first","err"); return; }
+    repairPart(p); bpUpdateSummary(); });
+  function bpSyncConnUI(){
+    if($("bpConnSizeVal")) $("bpConnSizeVal").textContent=($("bpConnSize")?$("bpConnSize").value:8)+" mm";
+    const pat=$("bpConnPattern")?$("bpConnPattern").value:"1";
+    if($("bpConnHint")) $("bpConnHint").textContent = pat==="0"
+      ? "Manual: after splitting you'll click each seam to place pins yourself."
+      : "Pins are added automatically; you can still fine-tune them by hand after splitting.";
+  }
+  if($("bpConnSize")) $("bpConnSize").addEventListener("input",bpSyncConnUI);
+  if($("bpConnPattern")) $("bpConnPattern").addEventListener("change",bpSyncConnUI);
+  bpSyncConnUI();
   bpUpdateSummary();
 })();
 
@@ -3193,6 +3733,7 @@ function autosaveNow(){
       if(_lastAutosave && _lastAutosave!=="∅"){ localStorage.removeItem(AUTOSAVE_KEY); _lastAutosave="∅"; }
       return;   // never wipe a prior recovery just because we booted into an empty scene
     }
+    let vtot=0; for(const p of parts){ const pa=p.mesh&&p.mesh.geometry&&p.mesh.geometry.attributes.position; if(pa) vtot+=pa.count; if(vtot>400000) return; }   // too heavy to serialize safely (memory churn + exceeds localStorage quota) — skip
     const body=JSON.stringify(serialize());
     if(body===_lastAutosave) return;                 // nothing changed since last write
     _lastAutosave=body;
